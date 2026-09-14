@@ -27,6 +27,7 @@ on:
 permissions:
   contents: read
   actions: write
+  packages: read
 
 jobs:
   legacy:
@@ -41,6 +42,7 @@ jobs:
       DISTILL_RELEASE_BUILD: "1"
       DISTILL_VERIFY_AFTER_BUILD: "1"
       HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_DOCKER_REGISTRY_TOKEN: ${{ github.token }}
       HOMEBREW_ARTIFACT_DOMAIN: ${{ vars.DISTILL_ARTIFACT_DOMAIN }}
       HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK: "1"
     steps:
