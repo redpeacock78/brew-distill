@@ -75,7 +75,7 @@ fi
 export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
 (
   cd -- "$bottle_dir"
-  brew install --formula "./$bottle_name"
+  HOMEBREW_INTERNAL_ALLOW_PACKAGES_FROM_PATHS=1 brew install --formula "./$bottle_name"
 )
 brew test "$formula" > "$output_dir/$safe_name.test.txt" 2>&1
 brew linkage --test "$formula" > "$output_dir/$safe_name.linkage.txt" 2>&1
