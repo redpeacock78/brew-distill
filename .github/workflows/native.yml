@@ -12,7 +12,6 @@ on:
 permissions:
   contents: read
   actions: write
-  packages: read
 
 jobs:
   build:
@@ -33,12 +32,17 @@ jobs:
       DISTILL_FORMULA: ${{ inputs.formula }}
       DISTILL_RELEASE_BUILD: "1"
       HOMEBREW_NO_AUTO_UPDATE: "1"
-      HOMEBREW_DOCKER_REGISTRY_TOKEN: ${{ github.token }}
       HOMEBREW_ARTIFACT_DOMAIN: ${{ vars.DISTILL_ARTIFACT_DOMAIN }}
       HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Authorize Homebrew bottle downloads
+        run: |
+          token=$(./scripts/homebrew-ghcr-token "$DISTILL_FORMULA")
+          echo "::add-mask::$token"
+          printf '%s\n' "HOMEBREW_DOCKER_REGISTRY_TOKEN=$token" >> "$GITHUB_ENV"
 
       - name: Build and package
         run: |
@@ -72,12 +76,17 @@ jobs:
       DISTILL_FORMULA: ${{ inputs.formula }}
       DISTILL_RELEASE_BUILD: "1"
       HOMEBREW_NO_AUTO_UPDATE: "1"
-      HOMEBREW_DOCKER_REGISTRY_TOKEN: ${{ github.token }}
       HOMEBREW_ARTIFACT_DOMAIN: ${{ vars.DISTILL_ARTIFACT_DOMAIN }}
       HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Authorize Homebrew bottle downloads
+        run: |
+          token=$(./scripts/homebrew-ghcr-token "$DISTILL_FORMULA")
+          echo "::add-mask::$token"
+          printf '%s\n' "HOMEBREW_DOCKER_REGISTRY_TOKEN=$token" >> "$GITHUB_ENV"
 
       - name: Download release candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

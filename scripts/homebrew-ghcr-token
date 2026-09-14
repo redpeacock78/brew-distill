@@ -1,0 +1,49 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -lt 1 ]; then
+  printf '%s\n' "usage: homebrew-ghcr-token FORMULA..." >&2
+  exit 2
+fi
+command -v brew >/dev/null 2>&1 || {
+  printf '%s\n' "homebrew-ghcr-token: brew is required" >&2
+  exit 1
+}
+command -v curl >/dev/null 2>&1 || {
+  printf '%s\n' "homebrew-ghcr-token: curl is required" >&2
+  exit 1
+}
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "homebrew-ghcr-token: jq is required" >&2
+  exit 1
+}
+
+token_url='https://ghcr.io/token?service=ghcr.io'
+add_scope() {
+  formula=$1
+  case "$formula" in
+    ''|-*|*[!A-Za-z0-9@+._/-]*)
+      printf '%s\n' "homebrew-ghcr-token: unsafe formula name: $formula" >&2
+      exit 2
+      ;;
+  esac
+  image_name=$(printf '%s' "$formula" | tr '@+' '/x')
+  encoded_scope=$(printf 'repository:homebrew/core/%s:pull' "$image_name" |
+    sed 's/:/%3A/g; s#/#%2F#g')
+  token_url="$token_url&scope=$encoded_scope"
+}
+
+for formula do
+  add_scope "$formula"
+  deps=$(brew deps --formula --include-build --include-optional --include-test --include-implicit "$formula")
+  while IFS= read -r dep; do
+    [ -n "$dep" ] || continue
+    add_scope "$dep"
+  done <<EOF
+$deps
+EOF
+done
+
+curl -fsS "$token_url" | jq -er '.token // .access_token // empty'
