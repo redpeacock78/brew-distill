@@ -70,6 +70,7 @@ bottle_json=$(find . -type f -name '*.bottle*.json' -print | sed -n '1p')
 
 if [ -z "$bottle" ] || [ -z "$bottle_json" ]; then
   printf '%s\n' "native-build: brew bottle did not produce Bottle and JSON" >&2
+  find . -maxdepth 2 -type f -print >&2
   exit 1
 fi
 
