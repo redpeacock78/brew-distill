@@ -63,6 +63,15 @@ printf '%s\n' bottle > "$3/$1--1.0.ventura.bottle.tar.gz"
 EOF
 chmod 755 "$test_dir/bin/qemu-system-x86_64" "$test_dir/bin/qemu-img" \
   "$test_dir/bin/softwareupdate" "$test_dir/bootstrap" "$test_dir/builder"
+cat > "$test_dir/bin/sysctl" <<'EOF'
+#!/bin/sh
+case "${2:-}" in
+  kern.hv_support) printf '%s\n' 1 ;;
+  machdep.cpu.brand_string) printf '%s\n' 'Test CPU' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod 755 "$test_dir/bin/sysctl"
 jq -n '{formulas:["csound"]}' > "$test_dir/batch.json"
 
 PATH="$test_dir/bin:$PATH" \

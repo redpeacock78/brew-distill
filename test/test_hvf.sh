@@ -15,8 +15,17 @@ mkdir -p "$test_dir/bin" "$test_dir/out"
 cp "$repo_dir/test/fake-qemu" "$test_dir/bin/qemu-system-x86_64"
 cp "$repo_dir/test/fake-qemu-img" "$test_dir/bin/qemu-img"
 chmod 755 "$test_dir/bin/qemu-system-x86_64" "$test_dir/bin/qemu-img"
+cat > "$test_dir/bin/sysctl" <<'EOF'
+#!/bin/sh
+case "${2:-}" in
+  kern.hv_support) printf '%s\n' 1 ;;
+  machdep.cpu.brand_string) printf '%s\n' 'Test CPU' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod 755 "$test_dir/bin/sysctl"
 
-QEMU_SYSTEM_X86_64="$test_dir/bin/qemu-system-x86_64" \
+PATH="$test_dir/bin:$PATH" QEMU_SYSTEM_X86_64="$test_dir/bin/qemu-system-x86_64" \
   "$repo_dir/scripts/hvf/probe" "$test_dir/out"
 jq -e '.host.hv_support == "1" and .qemu.hvf == true' "$test_dir/out/host-info.json" >/dev/null
 
