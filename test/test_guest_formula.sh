@@ -81,8 +81,12 @@ case "$destination" in
       *.bottle.tar.gz)
         printf '%s\n' 'fixture bottle' > "$destination/dummy--1.0.ventura.bottle.tar.gz"
         ;;
-      *.bottle.json)
-        printf '%s\n' '{}' > "$destination/dummy--1.0.ventura.bottle.json"
+      *.bottle*.json)
+        json_name=dummy--1.0.ventura.bottle.json
+        if [ "${FAKE_BOTTLE_JSON_REBUILD:-0}" = "1" ]; then
+          json_name=dummy--1.0.ventura.bottle.1.json
+        fi
+        printf '%s\n' '{}' > "$destination/$json_name"
         ;;
       */formula-info.json)
         cp "$FAKE_REMOTE_INFO" "$destination/formula-info.json"
@@ -109,6 +113,7 @@ run_with_fakes() {
     "FAKE_REMOTE_LOG=$test_dir/remote.log" \
     "FAKE_REMOTE_ROOT=$test_dir/remote" \
     "FAKE_REMOTE_INFO=$test_dir/remote/formula-info.json" \
+    FAKE_BOTTLE_JSON_REBUILD=1 \
     "$script" "$@"
 }
 

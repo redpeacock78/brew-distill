@@ -155,12 +155,22 @@ fi
 
 brew_shell "cd '$guest_dir' && brew bottle --json '$formula'"
 scp_guest "$target:$guest_dir/*.bottle.tar.gz" "$artifact_dir/"
-scp_guest "$target:$guest_dir/*.bottle.json" "$artifact_dir/"
+scp_guest "$target:$guest_dir/*.bottle*.json" "$artifact_dir/"
 bottle=$(find "$artifact_dir" -maxdepth 1 -type f -name "${formula##*/}*.bottle.tar.gz" -print | sed -n '1p')
 test -n "$bottle" || {
   printf '%s\n' "build-formula: no exported Bottle for $formula" >&2
   exit 1
 }
+bottle_json=$(find "$artifact_dir" -maxdepth 1 -type f -name "${formula##*/}*.bottle*.json" -print | sed -n '1p')
+test -n "$bottle_json" || {
+  printf '%s\n' "build-formula: no exported Bottle JSON for $formula" >&2
+  exit 1
+}
+json_name=$(basename -- "${bottle%.tar.gz}.json")
+json_path="$artifact_dir/$json_name"
+if [ "$bottle_json" != "$json_path" ]; then
+  mv "$bottle_json" "$json_path"
+fi
 brew_shell "brew info --json=v2 --formula '$formula' > '$guest_dir/formula-info.json'"
 scp_guest "$target:$guest_dir/formula-info.json" "$artifact_dir/"
 guest_version=$(ssh_guest sw_vers -productVersion)

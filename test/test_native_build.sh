@@ -53,8 +53,11 @@ BREW_LOG="$test_dir/csound-brew.log" \
 CSOUND_LOG="$test_dir/csound.log" \
 FAKE_PREFIX="$test_dir/prefix" \
 FAKE_FORMULA=csound \
+FAKE_BOTTLE_JSON_REBUILD=1 \
   "$repo_dir/scripts/native-build" csound "$test_dir/csound-out" >/dev/null
 test -s "$test_dir/csound-out/csound--1.0.ventura.bottle.tar.gz"
+test -s "$test_dir/csound-out/csound--1.0.ventura.bottle.json"
+test ! -e "$test_dir/csound-out/csound--1.0.ventura.bottle.1.json"
 test -s "$test_dir/csound-out/csound.smoke.wav"
 test -s "$test_dir/csound.log"
 
