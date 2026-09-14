@@ -32,6 +32,8 @@ test -f "$bottle" || {
   printf '%s\n' "native-verify: Bottle does not exist: $bottle" >&2
   exit 1
 }
+bottle_dir=$(cd -- "$(dirname -- "$bottle")" && pwd)
+bottle="$bottle_dir/$(basename -- "$bottle")"
 command -v brew >/dev/null 2>&1 || {
   printf '%s\n' "native-verify: brew is required" >&2
   exit 1

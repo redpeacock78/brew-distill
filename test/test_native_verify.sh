@@ -27,13 +27,16 @@ chmod 755 "$test_dir/prefix/bin/csound"
 printf '%s\n' bottle > "$test_dir/csound--1.0.ventura.bottle.tar.gz"
 sha=$(shasum -a 256 "$test_dir/csound--1.0.ventura.bottle.tar.gz" | awk '{print $1}')
 
-PATH="$test_dir/bin:$PATH" \
-BREW_LOG="$test_dir/brew.log" \
-FAKE_FORMULA=csound \
-FAKE_PREFIX="$test_dir/prefix" \
-FAKE_INSTALLED_STATE="$test_dir/installed" \
-  "$repo_dir/scripts/native-verify" csound \
-  "$test_dir/csound--1.0.ventura.bottle.tar.gz" "$sha" "$test_dir/out" >/dev/null
+(
+  cd "$test_dir"
+  PATH="$test_dir/bin:$PATH" \
+  BREW_LOG="$test_dir/brew.log" \
+  FAKE_FORMULA=csound \
+  FAKE_PREFIX="$test_dir/prefix" \
+  FAKE_INSTALLED_STATE="$test_dir/installed" \
+    "$repo_dir/scripts/native-verify" csound \
+    "$(basename -- "$test_dir/csound--1.0.ventura.bottle.tar.gz")" "$sha" "$test_dir/out" >/dev/null
+)
 
 test -s "$test_dir/out/csound.smoke.wav"
 test -s "$test_dir/out/native-verification.txt"
