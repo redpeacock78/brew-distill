@@ -24,6 +24,9 @@ jobs:
           command -v jq
           command -v ruby
           command -v shasum
+          if ! ruby -e 'require "webrick"' >/dev/null 2>&1; then
+            gem install webrick --no-document
+          fi
           if ! command -v shellcheck >/dev/null 2>&1; then
             brew install shellcheck
           fi
