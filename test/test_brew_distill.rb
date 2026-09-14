@@ -167,6 +167,63 @@ Dir.mktmpdir("brew-distill-test") do |dir|
   assert(pin_status == 0 && unpin_status == 0, "protect commands failed")
   assert(File.read(brew_log).lines.map(&:strip).grep(/pin foo/).any?, "protect was not delegated to Homebrew")
 
+  help_out = StringIO.new
+  assert(BrewDistill::CLI.new(["help"], out: help_out, err: StringIO.new).run == 0 &&
+         help_out.string.include?("upgrade FORMULA"), "help command failed")
+  doctor_out = StringIO.new
+  doctor_status = BrewDistill::CLI.new(
+    ["doctor", "--brew", File.expand_path("fake-brew", __dir__), "--registry", registry_path],
+    out: doctor_out, err: StringIO.new
+  ).run
+  assert(doctor_status == 0 && doctor_out.string.include?("OK registry="), "doctor command failed")
+  info_out = StringIO.new
+  info_status = BrewDistill::CLI.new(
+    ["info", "foo", "--formula-data", formula_path, "--platform-json", platform_path],
+    out: info_out, err: StringIO.new
+  ).run
+  assert(info_status == 0 && JSON.parse(info_out.string)["formula"]["name"] == "foo", "info command failed")
+  search_status = BrewDistill::CLI.new(
+    ["search", "foo", "--brew", File.expand_path("fake-brew", __dir__)],
+    out: StringIO.new, err: StringIO.new
+  ).run
+  assert(search_status == 0 && File.read(brew_log).lines.map(&:strip).grep(/search foo/).any?, "search command failed")
+  upgrade_status = BrewDistill::CLI.new(
+    ["upgrade", "bar", "--formula-data", formula_path, "--platform-json", platform_path,
+     "--brew", File.expand_path("fake-brew", __dir__), "--state", File.join(dir, "upgrade-state.json")],
+    out: StringIO.new, err: StringIO.new
+  ).run
+  assert(upgrade_status == 0 && File.read(brew_log).lines.map(&:strip).grep(/install --formula bar/).any?, "upgrade command failed")
+  reconcile_out = StringIO.new
+  reconcile_status = BrewDistill::CLI.new(
+    ["reconcile", "--brew", File.expand_path("fake-brew", __dir__), "--state", state_path, "--json"],
+    out: reconcile_out, err: StringIO.new
+  ).run
+  reconcile = JSON.parse(reconcile_out.string)
+  assert(reconcile_status == 0 && reconcile["formulae"]["foo"] == "managed", "reconcile command failed")
+
+  fetch_bin = File.join(dir, "fetch-bin")
+  FileUtils.mkdir_p(fetch_bin)
+  fake_curl = File.expand_path("fake-curl", __dir__)
+  FileUtils.cp(fake_curl, File.join(fetch_bin, "curl"))
+  FileUtils.chmod(0o755, File.join(fetch_bin, "curl"))
+  fetch_sha = Digest::SHA256.hexdigest("prefetched artifact\n")
+  fetch_metadata = File.join(dir, "fetch.json")
+  File.write(fetch_metadata, JSON.generate([{ "url" => "https://example.test/source.tar.gz", "sha256" => fetch_sha }]))
+  fetch_cas = File.join(dir, "fetch-cas")
+  old_path = ENV["PATH"]
+  fetch_status = nil
+  begin
+    ENV["PATH"] = "#{fetch_bin}:#{old_path}"
+    fetch_status = BrewDistill::CLI.new(
+      ["fetch", fetch_metadata, "--cas", fetch_cas, "--mapping", File.join(fetch_cas, "urls.json")],
+      out: StringIO.new, err: StringIO.new
+    ).run
+  ensure
+    ENV["PATH"] = old_path
+  end
+  fetch_object = File.join(fetch_cas, "sha256", fetch_sha[0, 2], fetch_sha[2, 2], fetch_sha)
+  assert(fetch_status == 0 && File.file?(fetch_object), "fetch command failed")
+
   remote_registry_path = File.join(dir, "remote-registry.json")
   remote_registry = JSON.parse(File.read(registry_path))
   remote_sha = Digest::SHA256.hexdigest("prefetched artifact\n")

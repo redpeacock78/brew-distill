@@ -76,8 +76,11 @@ find "$release_dir" -type f -name '*.bottle.json' -exec cp {} "$metadata_dir/" \
 find "$release_dir" -type f -name '*.manifest.json' -exec cp {} "$metadata_dir/" \;
 tar -czf "$release_dir/metadata.tar.gz" -C "$metadata_dir" .
 
-find "$release_dir" -type f \( -name '*.bottle.tar.gz' -o -name '*.bottle.json' -o -name '*.manifest.json' -o -name 'manifest.json' -o -name 'metadata.tar.gz' \) \
-  -exec shasum -a 256 {} + | sed "s#^$release_dir/##" > "$release_dir/checksums.txt"
+(
+  cd "$release_dir"
+  find . -type f \( -name '*.bottle.tar.gz' -o -name '*.bottle.json' -o -name '*.manifest.json' -o -name 'manifest.json' -o -name 'metadata.tar.gz' \) \
+    -exec shasum -a 256 {} +
+) | sed 's#  \./#  #' > "$release_dir/checksums.txt"
 
 printf '%s\n' "Release: $release_dir"
 printf '%s\n' "Manifest: $release_dir/manifest.json"

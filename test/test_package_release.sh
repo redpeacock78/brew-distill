@@ -26,6 +26,11 @@ test -s "$release_dir/manifest.json"
 test -s "$release_dir/checksums.txt"
 test -s "$release_dir/metadata.tar.gz"
 (cd "$release_dir" && shasum -a 256 -c checksums.txt >/dev/null)
+if grep -F -- "$test_dir" "$release_dir/checksums.txt" >/dev/null; then
+  printf '%s\n' 'package-release wrote absolute checksum paths' >&2
+  exit 1
+fi
+grep -F -- 'dummy--1.0.ventura.bottle.tar.gz' "$release_dir/checksums.txt" >/dev/null
 if find "$release_dir" -type f \( -name '*.qcow2' -o -name '*.img' -o -name '*.raw' \) -print | grep -q .; then
   printf '%s\n' 'package-release exported a VM image' >&2
   exit 1
