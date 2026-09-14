@@ -111,7 +111,7 @@ EOF
   safe_name=$(printf '%s' "$formula" | tr '/@+' '___')
   overlay="$overlay_dir/$safe_name.qcow2"
   formula_file=${formula##*/}
-  artifact_pattern="$formula_file*.bottle.tar.gz"
+  artifact_pattern="$formula_file*.bottle*.tar.gz"
   if [ -n "$blocked" ]; then
     jq --arg formula "$formula" --arg blocked "$blocked" \
       '.[$formula] = {status:"SKIPPED_DEPENDENCY",dependencies:$blocked}' \

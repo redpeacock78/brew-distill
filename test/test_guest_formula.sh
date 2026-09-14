@@ -78,15 +78,15 @@ case "$destination" in
     destination=${destination%/}
     mkdir -p "$destination"
     case "$source" in
-      *.bottle.tar.gz)
-        printf '%s\n' 'fixture bottle' > "$destination/dummy--1.0.ventura.bottle.tar.gz"
-        ;;
-      *.bottle*.json)
-        json_name=dummy--1.0.ventura.bottle.json
-        if [ "${FAKE_BOTTLE_JSON_REBUILD:-0}" = "1" ]; then
-          json_name=dummy--1.0.ventura.bottle.1.json
+      *.bottle*.tar.gz)
+        bottle_name=dummy--1.0.ventura.bottle.tar.gz
+        if [ "${FAKE_BOTTLE_REBUILD:-0}" = "1" ]; then
+          bottle_name=dummy--1.0.ventura.bottle.1.tar.gz
         fi
-        printf '%s\n' '{}' > "$destination/$json_name"
+        printf '%s\n' 'fixture bottle' > "$destination/$bottle_name"
+        ;;
+      *.bottle.json)
+        printf '%s\n' '{}' > "$destination/dummy--1.0.ventura.bottle.json"
         ;;
       */formula-info.json)
         cp "$FAKE_REMOTE_INFO" "$destination/formula-info.json"
@@ -113,18 +113,19 @@ run_with_fakes() {
     "FAKE_REMOTE_LOG=$test_dir/remote.log" \
     "FAKE_REMOTE_ROOT=$test_dir/remote" \
     "FAKE_REMOTE_INFO=$test_dir/remote/formula-info.json" \
-    FAKE_BOTTLE_JSON_REBUILD=1 \
+    FAKE_BOTTLE_REBUILD=1 \
     "$script" "$@"
 }
 
 run_with_fakes "$repo_dir/scripts/hvf/build-formula" dummy \
   "$test_dir/overlay.qcow2" "$test_dir/build" >/dev/null
 
-bottle="$test_dir/build/dummy--1.0.ventura.bottle.tar.gz"
-manifest="$test_dir/build/dummy--1.0.ventura.bottle.manifest.json"
+bottle="$test_dir/build/dummy--1.0.ventura.bottle.1.tar.gz"
+manifest="$test_dir/build/dummy--1.0.ventura.bottle.1.manifest.json"
 test -s "$bottle"
+test -s "$test_dir/build/dummy--1.0.ventura.bottle.json"
 test -s "$manifest"
-jq -e '.schema == 4 and .formula.name == "dummy" and .platform.arch == "x86_64" and .artifact.path == "dummy--1.0.ventura.bottle.tar.gz"' \
+jq -e '.schema == 4 and .formula.name == "dummy" and .platform.arch == "x86_64" and .artifact.path == "dummy--1.0.ventura.bottle.1.tar.gz"' \
   "$manifest" >/dev/null
 grep -F -- 'brew install --build-bottle --formula dummy' "$test_dir/remote.log" >/dev/null
 grep -F -- 'brew bottle --json' "$test_dir/remote.log" >/dev/null

@@ -44,7 +44,7 @@ for file in manifest.json checksums.txt metadata.tar.gz; do
     exit 1
   }
 done
-find "$release_dir" -type f -name '*.bottle.tar.gz' -print | grep -q . || {
+find "$release_dir" -type f -name '*.bottle*.tar.gz' -print | grep -q . || {
   printf '%s\n' "publish-release: no Bottle assets" >&2
   exit 1
 }
@@ -56,7 +56,7 @@ if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
 fi
 
 set -- "$release_dir/manifest.json" "$release_dir/checksums.txt" "$release_dir/metadata.tar.gz"
-for pattern in "$release_dir"/*.bottle.tar.gz "$release_dir"/*.bottle.json "$release_dir"/*.manifest.json; do
+for pattern in "$release_dir"/*.bottle*.tar.gz "$release_dir"/*.bottle.json "$release_dir"/*.manifest.json; do
   [ -f "$pattern" ] && set -- "$@" "$pattern"
 done
 gh release create "$tag" --repo "$repo" --title "$tag" \

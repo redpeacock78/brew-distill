@@ -19,6 +19,7 @@ export BREW_LOG="$test_dir/brew.log"
 (
   cd "$test_dir"
   PATH="$test_dir/bin:$PATH" \
+  FAKE_BOTTLE_REBUILD=1 \
   DISTILL_RELEASE_BUILD=1 \
   HOMEBREW_ARTIFACT_DOMAIN=https://artifacts.example.invalid \
   HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK=1 \
@@ -28,7 +29,7 @@ export BREW_LOG="$test_dir/brew.log"
 )
 
 release_dir="$test_dir/release/distill-build-run-1-1"
-bottle="$release_dir/dummy--1.0.ventura.bottle.tar.gz"
+bottle="$release_dir/dummy--1.0.ventura.bottle.1.tar.gz"
 checksums="$release_dir/checksums.txt"
 expected=$(awk -v file="$(basename "$bottle")" '$2 == file { print $1; exit }' "$checksums")
 test -n "$expected"

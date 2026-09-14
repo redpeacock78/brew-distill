@@ -85,7 +85,7 @@ jobs:
       - name: Verify on fresh runner
         run: |
           test -n "$HOMEBREW_ARTIFACT_DOMAIN"
-          bottle=$(find release -type f -name '*.bottle.tar.gz' -print | sed -n '1p')
+          bottle=$(find release -type f -name '*.bottle*.tar.gz' -print | sed -n '1p')
           checksums=$(find release -type f -name checksums.txt -print | sed -n '1p')
           test -n "$bottle"
           test -n "$checksums"

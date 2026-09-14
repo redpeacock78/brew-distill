@@ -27,12 +27,12 @@ case "${1:-}" in
     fi
     ;;
   bottle)
-    printf '%s\n' "fixture bottle" > "$formula--1.0.ventura.bottle.tar.gz"
-    bottle_json="$formula--1.0.ventura.bottle.json"
-    if [ "${FAKE_BOTTLE_JSON_REBUILD:-0}" = "1" ]; then
-      bottle_json="$formula--1.0.ventura.bottle.1.json"
+    bottle_name="$formula--1.0.ventura.bottle.tar.gz"
+    if [ "${FAKE_BOTTLE_REBUILD:-0}" = "1" ]; then
+      bottle_name="$formula--1.0.ventura.bottle.1.tar.gz"
     fi
-    printf '%s\n' '{}' > "$bottle_json"
+    printf '%s\n' "fixture bottle" > "$bottle_name"
+    printf '%s\n' '{}' > "$formula--1.0.ventura.bottle.json"
     ;;
   *)
     ;;

@@ -45,10 +45,10 @@ if [ -e "$release_dir" ]; then
 fi
 mkdir -p "$release_dir"
 
-find "$input_dir" -type f \( -name '*.bottle.tar.gz' -o -name '*.bottle.json' -o -name '*.manifest.json' \) \
+find "$input_dir" -type f \( -name '*.bottle*.tar.gz' -o -name '*.bottle.json' -o -name '*.manifest.json' \) \
   -exec cp {} "$release_dir/" \;
 
-if ! find "$release_dir" -type f -name '*.bottle.tar.gz' -print | grep -q .; then
+if ! find "$release_dir" -type f -name '*.bottle*.tar.gz' -print | grep -q .; then
   printf '%s\n' "package-release: no Bottle artifacts in $input_dir" >&2
   exit 1
 fi
@@ -78,7 +78,7 @@ tar -czf "$release_dir/metadata.tar.gz" -C "$metadata_dir" .
 
 (
   cd "$release_dir"
-  find . -type f \( -name '*.bottle.tar.gz' -o -name '*.bottle.json' -o -name '*.manifest.json' -o -name 'manifest.json' -o -name 'metadata.tar.gz' \) \
+  find . -type f \( -name '*.bottle*.tar.gz' -o -name '*.bottle.json' -o -name '*.manifest.json' -o -name 'manifest.json' -o -name 'metadata.tar.gz' \) \
     -exec shasum -a 256 {} +
 ) | sed 's#  \./#  #' > "$release_dir/checksums.txt"
 

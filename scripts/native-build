@@ -65,17 +65,16 @@ if [ "$formula" = "csound" ]; then
 fi
 
 brew bottle --json "$formula"
-bottle=$(find . -type f -name '*.bottle.tar.gz' -print | sed -n '1p')
-bottle_json=$(find . -type f -name '*.bottle*.json' -print | sed -n '1p')
+bottle=$(find . -type f -name '*.bottle*.tar.gz' -print | sed -n '1p')
+bottle_json=$(find . -type f -name '*.bottle.json' -print | sed -n '1p')
 
 if [ -z "$bottle" ] || [ -z "$bottle_json" ]; then
   printf '%s\n' "native-build: brew bottle did not produce Bottle and JSON" >&2
-  find . -maxdepth 2 -type f -print >&2
   exit 1
 fi
 
 bottle_name=$(basename "$bottle")
-json_name=${bottle_name%.tar.gz}.json
+json_name=$(basename "$bottle_json")
 cp "$bottle" "$output_dir/$bottle_name"
 cp "$bottle_json" "$output_dir/$json_name"
 
