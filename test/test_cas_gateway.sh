@@ -4,7 +4,7 @@ set -eu
 export LC_ALL=C
 repo_dir=$(cd -- "$(dirname -- "$0")/.." && pwd)
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-gateway-test.XXXXXX")
-port=18080
+port=$((18080 + $$ % 1000))
 
 cleanup() {
   if [ -n "${gateway_pid:-}" ]; then
@@ -44,7 +44,10 @@ while [ "$attempt" -lt 20 ]; do
   attempt=$((attempt + 1))
   sleep 1
 done
-test "$ready" -eq 1
+if [ "$ready" -ne 1 ]; then
+  cat "$test_dir/gateway.log" >&2
+  exit 1
+fi
 
 test "$(curl -fsS --range 1-5 "http://127.0.0.1:$port/sha256/$first/$second/$sha")" = "atewa"
 test "$(curl -fsS "http://127.0.0.1:$port/https://example.test/source.tar.gz")" = "$content"
