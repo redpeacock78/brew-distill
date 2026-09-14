@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "${DISTILL_GUEST:-0}" != "1" ]; then
+  printf '%s\n' "bootstrap-homebrew: set DISTILL_GUEST=1 inside the macOS guest" >&2
+  exit 1
+fi
+if [ "$(uname -s)" != "Darwin" ]; then
+  printf '%s\n' "bootstrap-homebrew: Homebrew bootstrap must run in macOS" >&2
+  exit 1
+fi
+
+output_dir=${1:-out/hvf}
+mkdir -p "$output_dir"
+if ! command -v brew >/dev/null 2>&1; then
+  installer=${DISTILL_HOMEBREW_INSTALLER:-}
+  test -f "$installer" || {
+    printf '%s\n' "bootstrap-homebrew: provide DISTILL_HOMEBREW_INSTALLER" >&2
+    exit 1
+  }
+  /bin/bash "$installer"
+fi
+
+command -v brew >/dev/null 2>&1 || {
+  printf '%s\n' "bootstrap-homebrew: brew is unavailable after bootstrap" >&2
+  exit 1
+}
+brew --version > "$output_dir/brew-version.txt"
+brew config > "$output_dir/brew-config.txt"
+brew doctor > "$output_dir/brew-doctor.txt" 2>&1 || true
+printf '%s\n' "Homebrew ready"

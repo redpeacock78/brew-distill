@@ -1,0 +1,34 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -gt 2 ]; then
+  printf '%s\n' "usage: freeze-base [BASE.qcow2] [output-dir]" >&2
+  exit 2
+fi
+base_arg=${1:-${DISTILL_BASE_IMAGE:-out/hvf/base.qcow2}}
+base=$(cd -- "$(dirname -- "$base_arg")" && pwd)/$(basename -- "$base_arg")
+output_dir=${2:-out/hvf}
+test -f "$base" || {
+  printf '%s\n' "freeze-base: base image does not exist: $base" >&2
+  exit 1
+}
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "freeze-base: jq is required" >&2
+  exit 1
+}
+qemu_img=${QEMU_IMG:-qemu-img}
+command -v "$qemu_img" >/dev/null 2>&1 || {
+  printf '%s\n' "freeze-base: qemu-img is required" >&2
+  exit 1
+}
+
+mkdir -p "$output_dir"
+"$qemu_img" check "$base" > "$output_dir/base-check.txt"
+chmod a-w "$base"
+jq -n \
+  --arg base "$base" \
+  '{schema:1,base:$base,read_only:true,persistent:false}' \
+  > "$output_dir/base.json"
+printf '%s\n' "base frozen: $base"

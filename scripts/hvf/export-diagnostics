@@ -1,0 +1,44 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+output_dir=${1:-out}
+archive=${2:-}
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "export-diagnostics: jq is required" >&2
+  exit 1
+}
+test -d "$output_dir" || {
+  printf '%s\n' "export-diagnostics: output directory does not exist: $output_dir" >&2
+  exit 1
+}
+
+file_list=$(mktemp "${TMPDIR:-/tmp}/brew-distill-diagnostics.XXXXXX")
+cleanup() {
+  rm -f "$file_list"
+}
+trap cleanup EXIT HUP INT TERM
+find "$output_dir" -type f \( \
+  -name 'host-info.json' -o -name 'disk-*.txt' -o -name 'disk-*.json' \
+  -o -name 'qemu.log' -o -name 'opencore.log' -o -name 'guest-console.log' \
+  -o -name 'guest-info.*' -o -name 'guest-*.json' -o -name '*.guest-*.json' \
+  -o -name 'startosinstall-usage.txt' \
+  -o -name 'brew-config.txt' -o -name 'brew-doctor.txt' \
+  -o -name '*.linkage.txt' -o -name '*.verify-linkage.txt' \
+  -o -name 'timings.json' -o -name 'batch-results.json' \
+\) -print | sort > "$file_list"
+count=$(awk 'NF {count++} END {print count + 0}' "$file_list")
+jq -n --arg output "$output_dir" --argjson count "$count" \
+  '{schema:1,output:$output,files:$count}' > "$output_dir/diagnostics.json"
+
+if [ -n "$archive" ]; then
+  test "$count" -gt 0 || {
+    printf '%s\n' "export-diagnostics: no diagnostics found" >&2
+    exit 1
+  }
+  tar -czf "$archive" -T "$file_list"
+  printf '%s\n' "Diagnostics: $archive"
+else
+  printf '%s\n' "Diagnostics: $output_dir/diagnostics.json ($count files)"
+fi

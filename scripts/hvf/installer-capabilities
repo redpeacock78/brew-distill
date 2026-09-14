@@ -1,0 +1,60 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  printf '%s\n' "usage: installer-capabilities INSTALLER.app [output-dir]" >&2
+  exit 2
+fi
+
+installer=$1
+output_dir=${2:-out/hvf}
+startosinstall="$installer/Contents/Resources/startosinstall"
+test -x "$startosinstall" || {
+  printf '%s\n' "installer-capabilities: startosinstall is unavailable: $startosinstall" >&2
+  exit 1
+}
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "installer-capabilities: jq is required" >&2
+  exit 1
+}
+
+mkdir -p "$output_dir"
+usage_file="$output_dir/startosinstall-usage.txt"
+usage_status=0
+"$startosinstall" --usage > "$usage_file" 2>&1 || usage_status=$?
+
+has_option() {
+  grep -Eq -- "(^|[[:space:]])$1([[:space:]]|$)" "$usage_file"
+}
+
+agreetolicense=0
+nointeraction=0
+eraseinstall=0
+installpackage=0
+volume=0
+if has_option --agreetolicense; then agreetolicense=1; fi
+if has_option --nointeraction; then nointeraction=1; fi
+if has_option --eraseinstall; then eraseinstall=1; fi
+if has_option --installpackage; then installpackage=1; fi
+if has_option --volume; then volume=1; fi
+
+jq -n \
+  --arg installer "$installer" \
+  --arg usage "$usage_file" \
+  --argjson usage_status "$usage_status" \
+  --argjson agreetolicense "$agreetolicense" \
+  --argjson nointeraction "$nointeraction" \
+  --argjson eraseinstall "$eraseinstall" \
+  --argjson installpackage "$installpackage" \
+  --argjson volume "$volume" \
+  '{installer:$installer,usage:$usage,usage_status:$usage_status,options:{agreetolicense:($agreetolicense == 1),nointeraction:($nointeraction == 1),eraseinstall:($eraseinstall == 1),installpackage:($installpackage == 1),volume:($volume == 1)}}' \
+  > "$output_dir/installer-capabilities.json"
+
+if [ "$usage_status" -ne 0 ]; then
+  printf '%s\n' "installer-capabilities: startosinstall --usage failed" >&2
+  exit "$usage_status"
+fi
+
+printf '%s\n' "saved $output_dir/installer-capabilities.json"

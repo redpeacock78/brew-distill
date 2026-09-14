@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+case "${1:-}" in
+  --version)
+    printf '%s\n' "QEMU emulator version 9.0.0"
+    ;;
+  -accel)
+    printf '%s\n' "tcg" "hvf"
+    ;;
+  *)
+    exit 2
+    ;;
+esac

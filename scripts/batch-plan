@@ -1,0 +1,76 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+  printf '%s\n' "usage: batch-plan BATCH.json TIMINGS.json [output.json]" >&2
+  exit 2
+fi
+batch=$1
+timings=$2
+output=${3:-}
+
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "batch-plan: jq is required" >&2
+  exit 1
+}
+
+jq -e '
+  (.formulas | type == "array" and length > 0) and
+  (.formulas | all(type == "string" and length > 0)) and
+  ((.tag // .os) | type == "string" and length > 0)
+' "$batch" >/dev/null
+jq -e 'type == "object"' "$timings" >/dev/null
+
+max_seconds=${DISTILL_BATCH_MAX_SECONDS:-18000}
+bootstrap=${DISTILL_BATCH_BOOTSTRAP_SECONDS:-0}
+upload=${DISTILL_BATCH_UPLOAD_SECONDS:-0}
+safety=${DISTILL_BATCH_SAFETY_SECONDS:-0}
+for value in "$max_seconds" "$bootstrap" "$upload" "$safety"; do
+  case "$value" in
+    ''|*[!0-9]*)
+      printf '%s\n' "batch-plan: timing values must be non-negative integers" >&2
+      exit 2
+      ;;
+  esac
+done
+if [ "$max_seconds" -gt 18000 ]; then
+  printf '%s\n' "BATCH_OVER_BUDGET" >&2
+  exit 1
+fi
+
+plan=$(jq -n \
+  --slurpfile batch "$batch" \
+  --slurpfile timings "$timings" \
+  --argjson max_seconds "$max_seconds" \
+  --argjson bootstrap "$bootstrap" \
+  --argjson upload "$upload" \
+  --argjson safety "$safety" '
+  ($batch[0]) as $batch |
+  ($timings[0]) as $timings |
+  ($batch.tag // $batch.os) as $tag |
+  [$batch.formulas[] as $formula |
+    ($timings[$formula][$tag].p95_seconds) as $p95 |
+    if ($p95 | type) != "number" or $p95 < 0 then
+      error("missing p95_seconds for \($formula) on \($tag)")
+    else
+      {formula:$formula,p95_seconds:$p95}
+    end
+  ] as $items |
+  ($bootstrap + ($items | map(.p95_seconds) | add // 0) + $upload + $safety) as $total |
+  {schema:1,tag:$tag,formulas:$items,bootstrap_seconds:$bootstrap,upload_seconds:$upload,safety_seconds:$safety,estimated_total_seconds:$total,maximum_workload_seconds:$max_seconds,reserve_seconds:3600,fits:($total <= $max_seconds)}
+')
+
+if [ -n "$output" ]; then
+  printf '%s\n' "$plan" > "$output"
+else
+  printf '%s\n' "$plan"
+fi
+
+if printf '%s\n' "$plan" | jq -e '.fits' >/dev/null; then
+  exit 0
+fi
+
+printf '%s\n' "BATCH_OVER_BUDGET" >&2
+exit 1

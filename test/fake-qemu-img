@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+printf '%s\n' "$*" >> "$QEMU_IMG_LOG"
+output=
+for argument
+do
+  output=$argument
+done
+printf '%s\n' "overlay" > "$output"

@@ -1,0 +1,152 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -ne 4 ]; then
+  printf '%s\n' "usage: verify-formula FORMULA OVERLAY.qcow2 BOTTLE ARTIFACT-DIR" >&2
+  exit 2
+fi
+formula=$1
+overlay=$2
+bottle=$3
+artifact_dir=$4
+case "$formula" in
+  ''|-*|*[!A-Za-z0-9@+._/-]*)
+    printf '%s\n' "verify-formula: unsafe formula name: $formula" >&2
+    exit 2
+    ;;
+esac
+if [ ! -f "$overlay" ] || [ ! -f "$bottle" ]; then
+  printf '%s\n' "verify-formula: overlay and Bottle are required" >&2
+  exit 1
+fi
+mkdir -p "$artifact_dir"
+repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+boot=${DISTILL_GUEST_BOOT:-$repo_dir/scripts/hvf/boot-guest}
+ssh_cmd=${DISTILL_SSH:-ssh}
+scp_cmd=${DISTILL_SCP:-scp}
+target=${DISTILL_GUEST_SSH_TARGET:-distill@127.0.0.1}
+port=${DISTILL_GUEST_SSH_PORT:-2222}
+ssh_timeout=${DISTILL_GUEST_SSH_TIMEOUT:-600}
+safe_name=$(printf '%s' "$formula" | tr '/@+' '___')
+guest_dir="/tmp/brew-distill-verify-$safe_name"
+bottle_name=$(basename -- "$bottle")
+guest_pid=
+
+command -v "$ssh_cmd" >/dev/null 2>&1 || {
+  printf '%s\n' "verify-formula: ssh is required" >&2
+  exit 1
+}
+command -v "$scp_cmd" >/dev/null 2>&1 || {
+  printf '%s\n' "verify-formula: scp is required" >&2
+  exit 1
+}
+if [ ! -x "$boot" ]; then
+  boot_path=$(command -v "$boot" 2>/dev/null || true)
+  [ -n "$boot_path" ] || {
+    printf '%s\n' "verify-formula: guest boot command is unavailable: $boot" >&2
+    exit 1
+  }
+  boot=$boot_path
+fi
+case "${HOMEBREW_ARTIFACT_DOMAIN:-}" in
+  "") ;;
+  http://?*|https://?*)
+    case "$HOMEBREW_ARTIFACT_DOMAIN" in
+      *[!A-Za-z0-9./:_-]*)
+        printf '%s\n' "verify-formula: invalid HOMEBREW_ARTIFACT_DOMAIN" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  *)
+    printf '%s\n' "verify-formula: invalid HOMEBREW_ARTIFACT_DOMAIN" >&2
+    exit 2
+    ;;
+esac
+if [ "${DISTILL_RELEASE_BUILD:-0}" = "1" ]; then
+  case "${HOMEBREW_ARTIFACT_DOMAIN:-}" in
+    https://?*) ;;
+    *)
+      printf '%s\n' "verify-formula: release verification requires HTTPS HOMEBREW_ARTIFACT_DOMAIN" >&2
+      exit 2
+      ;;
+  esac
+  [ "${HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK:-0}" = "1" ] || {
+    printf '%s\n' "verify-formula: release verification requires HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK=1" >&2
+    exit 2
+  }
+fi
+
+cleanup() {
+  if [ -n "$guest_pid" ] && kill -0 "$guest_pid" 2>/dev/null; then
+    kill -TERM "$guest_pid" 2>/dev/null || true
+    wait "$guest_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+ssh_guest() {
+  if [ -n "${DISTILL_GUEST_KNOWN_HOSTS:-}" ]; then
+    "$ssh_cmd" -o BatchMode=yes -o UserKnownHostsFile="$DISTILL_GUEST_KNOWN_HOSTS" \
+      -p "$port" "$target" "$@"
+  else
+    "$ssh_cmd" -o BatchMode=yes -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null -p "$port" "$target" "$@"
+  fi
+}
+
+scp_guest() {
+  if [ -n "${DISTILL_GUEST_KNOWN_HOSTS:-}" ]; then
+    "$scp_cmd" -o BatchMode=yes -o UserKnownHostsFile="$DISTILL_GUEST_KNOWN_HOSTS" \
+      -P "$port" "$@"
+  else
+    "$scp_cmd" -o BatchMode=yes -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null -P "$port" "$@"
+  fi
+}
+
+brew_guest() {
+  if [ -n "${HOMEBREW_ARTIFACT_DOMAIN:-}" ]; then
+    ssh_guest env HOMEBREW_NO_AUTO_UPDATE=1 \
+      HOMEBREW_ARTIFACT_DOMAIN="$HOMEBREW_ARTIFACT_DOMAIN" \
+      HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK="${HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK:-0}" \
+      brew "$@"
+  else
+    ssh_guest env HOMEBREW_NO_AUTO_UPDATE=1 brew "$@"
+  fi
+}
+
+brew_shell() {
+  if [ -n "${HOMEBREW_ARTIFACT_DOMAIN:-}" ]; then
+    ssh_guest env HOMEBREW_NO_AUTO_UPDATE=1 \
+      HOMEBREW_ARTIFACT_DOMAIN="$HOMEBREW_ARTIFACT_DOMAIN" \
+      HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK="${HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK:-0}" \
+      sh -c "$1"
+  else
+    ssh_guest env HOMEBREW_NO_AUTO_UPDATE=1 sh -c "$1"
+  fi
+}
+
+"$boot" "$overlay" "$artifact_dir" > "$artifact_dir/verify-qemu.log" 2>&1 &
+guest_pid=$!
+DISTILL_GUEST_INFO="$artifact_dir/verify-guest-info.txt" \
+  "$repo_dir/scripts/hvf/wait-ssh" "$target" "$port" "$ssh_timeout"
+ssh_guest env HOMEBREW_NO_AUTO_UPDATE=1 mkdir -p "$guest_dir"
+brew_guest config > "$artifact_dir/verify-brew-config.txt"
+brew_guest doctor > "$artifact_dir/verify-brew-doctor.txt" 2>&1 || true
+scp_guest "$bottle" "$target:$guest_dir/$bottle_name"
+if [ "$formula" = "csound" ]; then
+  scp_guest "$repo_dir/tests/smoke.csd" "$target:$guest_dir/smoke.csd"
+fi
+brew_shell "cd '$guest_dir' && brew install --formula './$bottle_name'"
+brew_guest test "$formula"
+brew_guest linkage --test "$formula" \
+  > "$artifact_dir/$safe_name.verify-linkage.txt" 2>&1
+if [ "$formula" = "csound" ]; then
+  csound_prefix=$(brew_guest --prefix "$formula")
+  ssh_guest "$csound_prefix/bin/csound" -d -o "$guest_dir/smoke.wav" "$guest_dir/smoke.csd"
+  ssh_guest test -s "$guest_dir/smoke.wav"
+fi
+printf '%s\n' "fresh overlay passed $formula"

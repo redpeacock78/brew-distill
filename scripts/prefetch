@@ -1,0 +1,87 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -lt 1 ]; then
+  printf '%s\n' "usage: prefetch METADATA.json [cas-dir] [mapping.json]" >&2
+  exit 2
+fi
+metadata=$1
+cas_dir=${2:-cas}
+mapping=${3:-$cas_dir/urls.json}
+
+command -v curl >/dev/null 2>&1 || {
+  printf '%s\n' "prefetch: curl is required" >&2
+  exit 1
+}
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "prefetch: jq is required" >&2
+  exit 1
+}
+command -v shasum >/dev/null 2>&1 || {
+  printf '%s\n' "prefetch: shasum is required" >&2
+  exit 1
+}
+
+jq -e '
+  (if type == "array" then . else .artifacts end) as $items |
+  ($items | type == "array") and
+  ($items | all(.url | type == "string" and test("^https?://"))) and
+  ($items | all(.sha256 | type == "string" and test("^[0-9a-fA-F]{64}$"))) and
+  ($items | group_by(.url) | all(map(.sha256) | unique | length == 1))
+' "$metadata" >/dev/null
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-prefetch.XXXXXX")
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT HUP INT TERM
+
+records="$tmp_dir/records.tsv"
+jq -r '(if type == "array" then . else .artifacts end)[] | [.url, (.sha256 | ascii_downcase)] | @tsv' \
+  "$metadata" > "$records"
+
+mkdir -p "$cas_dir/sha256"
+mapping_dir=$(dirname -- "$mapping")
+mkdir -p "$mapping_dir"
+working_mapping="$tmp_dir/urls.json"
+if [ -f "$mapping" ]; then
+  jq -e 'type == "object"' "$mapping" > "$working_mapping"
+else
+  printf '%s\n' '{}' > "$working_mapping"
+fi
+
+tab=$(printf '\t')
+while IFS="$tab" read -r url expected; do
+  [ -n "$url" ] || continue
+  download="$tmp_dir/download"
+  curl --fail --location --retry 3 --connect-timeout 20 --max-time 180 \
+    --output "$download" "$url"
+  actual=$(shasum -a 256 "$download" | awk '{print $1}')
+  if [ "$actual" != "$expected" ]; then
+    printf '%s\n' "prefetch: SHA256 mismatch for $url: expected $expected, got $actual" >&2
+    exit 1
+  fi
+
+  first=$(printf '%s' "$expected" | cut -c 1-2)
+  second=$(printf '%s' "$expected" | cut -c 3-4)
+  object_dir="$cas_dir/sha256/$first/$second"
+  object="$object_dir/$expected"
+  mkdir -p "$object_dir"
+  if [ -f "$object" ]; then
+    existing=$(shasum -a 256 "$object" | awk '{print $1}')
+    [ "$existing" = "$expected" ] || {
+      printf '%s\n' "prefetch: CAS object is corrupt: $object" >&2
+      exit 1
+    }
+  else
+    mv "$download" "$object"
+  fi
+  jq --arg url "$url" --arg sha256 "$expected" \
+    '.[$url] = {sha256: $sha256}' "$working_mapping" > "$tmp_dir/next.json"
+  mv "$tmp_dir/next.json" "$working_mapping"
+  printf '%s\n' "stored $url sha256=$expected"
+done < "$records"
+
+mv "$working_mapping" "$mapping"

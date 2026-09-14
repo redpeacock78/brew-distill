@@ -1,0 +1,54 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  printf '%s\n' "usage: bootstrap-guest INSTALLER.app [output-dir]" >&2
+  exit 2
+fi
+if [ "${DISTILL_GUEST:-0}" != "1" ]; then
+  printf '%s\n' "bootstrap-guest: set DISTILL_GUEST=1 inside the macOS guest" >&2
+  exit 1
+fi
+if [ "$(uname -s)" != "Darwin" ]; then
+  printf '%s\n' "bootstrap-guest: startosinstall must run in macOS" >&2
+  exit 1
+fi
+
+installer=$1
+output_dir=${2:-out/hvf}
+repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+"$repo_dir/scripts/hvf/installer-capabilities" "$installer" "$output_dir" >/dev/null
+capabilities="$output_dir/installer-capabilities.json"
+startosinstall="$installer/Contents/Resources/startosinstall"
+
+jq -e '.options.agreetolicense and .options.nointeraction' "$capabilities" >/dev/null || {
+  printf '%s\n' "bootstrap-guest: installer lacks required headless options" >&2
+  exit 1
+}
+
+set -- --agreetolicense --nointeraction
+if [ "${DISTILL_ERASE_INSTALL:-0}" = "1" ]; then
+  jq -e '.options.eraseinstall' "$capabilities" >/dev/null || {
+    printf '%s\n' "bootstrap-guest: installer lacks --eraseinstall" >&2
+    exit 1
+  }
+  set -- "$@" --eraseinstall
+fi
+if [ -n "${DISTILL_INSTALL_VOLUME:-}" ]; then
+  jq -e '.options.volume' "$capabilities" >/dev/null || {
+    printf '%s\n' "bootstrap-guest: installer lacks --volume" >&2
+    exit 1
+  }
+  set -- "$@" --volume "$DISTILL_INSTALL_VOLUME"
+fi
+if [ -n "${DISTILL_INSTALL_PACKAGE:-}" ]; then
+  jq -e '.options.installpackage' "$capabilities" >/dev/null || {
+    printf '%s\n' "bootstrap-guest: installer lacks --installpackage" >&2
+    exit 1
+  }
+  set -- "$@" --installpackage "$DISTILL_INSTALL_PACKAGE"
+fi
+
+exec "$startosinstall" "$@"

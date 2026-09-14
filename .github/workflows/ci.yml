@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check required tools
+        run: |
+          command -v jq
+          command -v ruby
+          command -v shasum
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            brew install shellcheck
+          fi
+
+      - name: Check syntax and shell quality
+        run: |
+          ruby -c homebrew-distill
+          ruby -c cas-gateway
+          ruby -c scripts/hvf/boot-guest
+          for file in brew-distill scripts/* scripts/hvf/* test/*.sh; do
+            [ -f "$file" ] || continue
+            case "$file" in
+              scripts/hvf/boot-guest) continue ;;
+            esac
+            sh -n "$file"
+            shellcheck "$file"
+          done
+
+      - name: Run tests
+        run: |
+          ruby test/test_brew_distill.rb
+          for test in test/test_*.sh; do
+            "$test"
+          done
+
+      - name: Smoke test external Homebrew command
+        run: |
+          ./brew-distill doctor
+          PATH="$PWD:$PATH" brew distill --help

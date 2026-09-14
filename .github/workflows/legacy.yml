@@ -1,0 +1,86 @@
+name: Legacy Intel Research Bottle
+
+on:
+  workflow_dispatch:
+    inputs:
+      macos:
+        description: Legacy macOS major version
+        required: true
+        default: "13"
+        type: choice
+        options:
+          - "11"
+          - "12"
+          - "13"
+          - "14"
+      installer_version:
+        description: Full Installer version accepted by softwareupdate
+        required: true
+        default: "13.6.1"
+        type: string
+      batch:
+        description: Formula batch JSON
+        required: true
+        default: '{"formulas":["csound"]}'
+        type: string
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  legacy:
+    runs-on: macos-15-intel
+    continue-on-error: true
+    env:
+      DISTILL_MACOS: ${{ inputs.macos }}
+      DISTILL_INSTALLER_VERSION: ${{ inputs.installer_version }}
+      DISTILL_BATCH_JSON: ${{ inputs.batch }}
+      DISTILL_LEGACY_BOOTSTRAP: ${{ vars.DISTILL_LEGACY_BOOTSTRAP }}
+      DISTILL_OPENCORE_DIR: ${{ vars.DISTILL_OPENCORE_DIR }}
+      DISTILL_RELEASE_BUILD: "1"
+      DISTILL_VERIFY_AFTER_BUILD: "1"
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_ARTIFACT_DOMAIN: ${{ vars.DISTILL_ARTIFACT_DOMAIN }}
+      HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install QEMU
+        run: brew install qemu
+
+      - name: Run Legacy PoC
+        run: |
+          test -n "$HOMEBREW_ARTIFACT_DOMAIN"
+          test -x "$DISTILL_LEGACY_BOOTSTRAP"
+          printf '%s\n' "$DISTILL_BATCH_JSON" > legacy-batch.json
+          DISTILL_LEGACY_OUTPUT_DIR=out \
+            ./scripts/hvf/legacy-poc "$DISTILL_MACOS" legacy-batch.json
+
+      - name: Upload diagnostics and artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: legacy-${{ inputs.macos }}-${{ github.run_id }}
+          path: |
+            out/artifacts/
+            out/diagnostics.json
+            out/hvf/host-info.json
+            out/hvf/disk-*.txt
+            out/hvf/disk-*.json
+            out/hvf/reclaim.json
+            out/hvf/reclaim.txt
+            out/hvf/installer.json
+            out/hvf/installer-capabilities.json
+            out/hvf/startosinstall-usage.txt
+            out/hvf/base.json
+            out/hvf/base-check.txt
+            out/hvf/guest-console.log
+            out/hvf/qemu.log
+            out/hvf/opencore.log
+            out/hvf/opencore/
+            !out/**/*.qcow2
+            !out/**/*.img
+            !out/**/*.raw
+          if-no-files-found: warn

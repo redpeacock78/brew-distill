@@ -1,0 +1,83 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+output_dir=${1:-out/hvf}
+mode=${2:-report}
+
+case "$mode" in
+  report|apply) ;;
+  *)
+    printf '%s\n' "usage: reclaim-disk [output-dir] [report|apply]" >&2
+    exit 2
+    ;;
+esac
+
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "hvf/reclaim-disk: jq is required" >&2
+  exit 1
+}
+
+repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+mkdir -p "$output_dir"
+paths=${DISTILL_RECLAIM_PATHS-}
+set -f
+if [ "$mode" = "apply" ] && [ -z "$paths" ]; then
+  printf '%s\n' "hvf/reclaim-disk: DISTILL_RECLAIM_PATHS is required for apply" >&2
+  exit 2
+fi
+
+"$repo_dir/scripts/hvf/disk-audit" "$output_dir" "${DISTILL_MIN_FREE_GIB:-35}" before >/dev/null
+{
+  printf 'mode=%s\n' "$mode"
+  if [ -z "$paths" ]; then
+    printf '%s\n' 'paths=[]'
+  else
+    printf '%s\n' 'paths:'
+    old_ifs=$IFS
+    IFS=:
+    for path in $paths; do
+      [ -n "$path" ] || continue
+      case "$path" in
+        /|//*|/.|/./)
+          printf '%s\n' "invalid path: refusing to delete filesystem root" >&2
+          exit 2
+          ;;
+        /*) ;;
+        *)
+          printf '%s\n' "invalid path: allow-list entries must be absolute: $path" >&2
+          exit 2
+          ;;
+      esac
+      case "/$path/" in
+        */../*)
+          printf '%s\n' "invalid path: parent traversal is not allowed: $path" >&2
+          exit 2
+          ;;
+      esac
+      if [ -d "$path" ]; then
+        resolved=$(cd -- "$path" && pwd -P)
+        [ "$resolved" != "/" ] || {
+          printf '%s\n' "invalid path: refusing to delete filesystem root" >&2
+          exit 2
+        }
+      fi
+      printf '%s\n' "$path"
+      if [ "$mode" = "apply" ] && [ -e "$path" ]; then
+        rm -rf -- "$path"
+      fi
+    done
+    IFS=$old_ifs
+  fi
+} > "$output_dir/reclaim.txt"
+
+"$repo_dir/scripts/hvf/disk-audit" "$output_dir" "${DISTILL_MIN_FREE_GIB:-35}" after >/dev/null
+
+jq -n \
+  --arg mode "$mode" \
+  --arg paths "$paths" \
+  '{schema:1,mode:$mode,paths:($paths | if length == 0 then [] else split(":") | map(select(length > 0)) end)}' \
+  > "$output_dir/reclaim.json"
+
+printf '%s\n' "disk reclaim $mode complete"

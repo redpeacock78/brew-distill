@@ -1,0 +1,75 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -ne 4 ]; then
+  printf '%s\n' "usage: verify-bottle FORMULA BOTTLE BASE.qcow2 OUTPUT-DIR" >&2
+  exit 2
+fi
+formula=$1
+bottle=$2
+base=$3
+output_dir=$4
+case "$formula" in
+  ''|-*|*[!A-Za-z0-9@+._/-]*)
+    printf '%s\n' "verify-bottle: unsafe formula name: $formula" >&2
+    exit 2
+    ;;
+esac
+test -f "$bottle" || {
+  printf '%s\n' "verify-bottle: Bottle does not exist: $bottle" >&2
+  exit 1
+}
+test -f "$base" || {
+  printf '%s\n' "verify-bottle: base image does not exist: $base" >&2
+  exit 1
+}
+command -v shasum >/dev/null 2>&1 || {
+  printf '%s\n' "verify-bottle: shasum is required" >&2
+  exit 1
+}
+expected_sha=${DISTILL_BOTTLE_SHA256:-}
+case "$expected_sha" in
+  "") ;;
+  *[!0-9a-fA-F]*)
+    printf '%s\n' "verify-bottle: invalid DISTILL_BOTTLE_SHA256" >&2
+    exit 2
+    ;;
+esac
+if [ -n "$expected_sha" ] && [ "${#expected_sha}" -ne 64 ]; then
+  printf '%s\n' "verify-bottle: invalid DISTILL_BOTTLE_SHA256" >&2
+  exit 2
+fi
+bottle_sha=$(shasum -a 256 "$bottle" | awk '{print $1}')
+if [ -n "$expected_sha" ] && [ "$(printf '%s' "$expected_sha" | tr '[:upper:]' '[:lower:]')" != "$bottle_sha" ]; then
+  printf '%s\n' "verify-bottle: Bottle SHA256 mismatch" >&2
+  exit 1
+fi
+repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+verify=${DISTILL_GUEST_VERIFY:-$repo_dir/scripts/hvf/verify-formula}
+test -x "$verify" || {
+  printf '%s\n' "verify-bottle: guest verifier is unavailable: $verify" >&2
+  exit 1
+}
+mkdir -p "$output_dir"
+overlay_dir="$output_dir/verify-overlays"
+mkdir -p "$overlay_dir"
+safe_name=$(printf '%s' "$formula" | tr '/@+' '___')
+printf '%s\n' "$bottle_sha" > "$output_dir/$safe_name.verify-sha256.txt"
+overlay="$overlay_dir/$safe_name-fresh.qcow2"
+test ! -e "$overlay" || {
+  printf '%s\n' "verify-bottle: overlay already exists: $overlay" >&2
+  exit 1
+}
+
+cleanup() {
+  if [ "${DISTILL_KEEP_OVERLAYS:-0}" != "1" ]; then
+    rm -f -- "$overlay"
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+"$repo_dir/scripts/hvf/create-overlay" "$base" "$overlay" >/dev/null
+"$verify" "$formula" "$overlay" "$bottle" "$output_dir"
+printf '%s\n' "verified fresh overlay $formula"

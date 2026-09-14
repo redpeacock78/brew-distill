@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 2 ]; then
+  printf '%s\n' "usage: create-overlay BASE.qcow2 OVERLAY.qcow2" >&2
+  exit 2
+fi
+
+base=$1
+overlay=$2
+qemu_img=${QEMU_IMG:-qemu-img}
+command -v "$qemu_img" >/dev/null 2>&1 || {
+  printf '%s\n' "hvf/create-overlay: qemu-img is required" >&2
+  exit 1
+}
+test -f "$base" || {
+  printf '%s\n' "hvf/create-overlay: base image does not exist: $base" >&2
+  exit 1
+}
+test ! -e "$overlay" || {
+  printf '%s\n' "hvf/create-overlay: overlay already exists: $overlay" >&2
+  exit 1
+}
+
+base=$(cd -- "$(dirname -- "$base")" && pwd)/$(basename -- "$base")
+overlay_dir=$(dirname -- "$overlay")
+overlay_name=$(basename -- "$overlay")
+mkdir -p "$overlay_dir"
+overlay=$(cd -- "$overlay_dir" && pwd)/$overlay_name
+
+exec "$qemu_img" create -f qcow2 -F qcow2 -b "$base" "$overlay"

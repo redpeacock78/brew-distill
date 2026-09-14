@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" = "--usage" ]; then
+  printf '%s\n' \
+    "--agreetolicense" \
+    "--nointeraction" \
+    "--eraseinstall" \
+    "--installpackage <path>" \
+    "--volume <path>"
+  exit 0
+fi
+printf '%s\n' "$*" >> "$STARTOSINSTALL_LOG"

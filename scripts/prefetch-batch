@@ -1,0 +1,61 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
+  printf '%s\n' "usage: prefetch-batch BATCH.json [cas-dir] [mapping.json]" >&2
+  exit 2
+fi
+batch=$1
+cas_dir=${2:-cas}
+mapping=${3:-$cas_dir/urls.json}
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "prefetch-batch: jq is required" >&2
+  exit 1
+}
+jq -e '.formulas | type == "array" and length > 0 and all(type == "string" and length > 0)' \
+  "$batch" >/dev/null
+
+kind=$(jq -r '
+  if (.artifacts | type) == "array" then "artifacts"
+  elif (.prefetch | type) == "string" then "file"
+  elif (.prefetch | type) == "array" then "prefetch"
+  else "none"
+  end
+' "$batch")
+case "$kind" in
+  artifacts)
+    tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-batch-prefetch.XXXXXX")
+    cleanup() {
+      rm -rf "$tmp_dir"
+    }
+    trap cleanup EXIT HUP INT TERM
+    jq '{artifacts:.artifacts}' "$batch" > "$tmp_dir/sources.json"
+    exec "$(cd -- "$(dirname -- "$0")" && pwd)/prefetch" \
+      "$tmp_dir/sources.json" "$cas_dir" "$mapping"
+    ;;
+  file)
+    source_file=$(jq -r '.prefetch' "$batch")
+    exec_dir=$(dirname -- "$batch")
+    case "$source_file" in
+      /*) ;;
+      *) source_file="$exec_dir/$source_file" ;;
+    esac
+    exec "$(cd -- "$(dirname -- "$0")" && pwd)/prefetch" \
+      "$source_file" "$cas_dir" "$mapping"
+    ;;
+  prefetch)
+    tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-batch-prefetch.XXXXXX")
+    cleanup() {
+      rm -rf "$tmp_dir"
+    }
+    trap cleanup EXIT HUP INT TERM
+    jq '{artifacts:.prefetch}' "$batch" > "$tmp_dir/sources.json"
+    exec "$(cd -- "$(dirname -- "$0")" && pwd)/prefetch" \
+      "$tmp_dir/sources.json" "$cas_dir" "$mapping"
+    ;;
+  none)
+    printf '%s\n' "prefetch-batch: no source artifacts"
+    ;;
+esac

@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+printf '%s\n' "$*" >> "$BREW_LOG"
+formula=${FAKE_FORMULA:-dummy}
+
+case "${1:-}" in
+  --version)
+    printf '%s\n' "Homebrew fake"
+    ;;
+  --prefix)
+    printf '%s\n' "${FAKE_PREFIX:?}"
+    ;;
+  info)
+    printf '%s\n' "{\"formulae\":[{\"name\":\"$formula\",\"versions\":{\"stable\":\"1.0\"},\"revision\":0,\"ruby_source_checksum\":{\"sha256\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"},\"dependencies\":[]}]}"
+    ;;
+  install)
+    if [ -n "${FAKE_INSTALLED_STATE:-}" ]; then
+      printf '%s\n' "$formula" > "$FAKE_INSTALLED_STATE"
+    fi
+    ;;
+  list)
+    if [ -n "${FAKE_INSTALLED_STATE:-}" ] && [ -s "$FAKE_INSTALLED_STATE" ]; then
+      printf '%s\n' "$formula 1.0"
+    else
+      printf '%s\n' "bar 1.0" "foo 2.0"
+    fi
+    ;;
+  bottle)
+    printf '%s\n' "fixture bottle" > "$formula--1.0.ventura.bottle.tar.gz"
+    printf '%s\n' '{}' > "$formula--1.0.ventura.bottle.json"
+    ;;
+  *)
+    ;;
+esac

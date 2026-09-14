@@ -1,0 +1,195 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "json"
+require "optparse"
+require "uri"
+require "webrick"
+
+class CasGateway
+  SHA256_BODY = "[0-9a-f]{64}"
+  SHA256 = /\A#{SHA256_BODY}\z/
+
+  def initialize(root:, mapping:, oci_origin: "https://ghcr.io")
+    @root = File.expand_path(root)
+    raise "CAS directory does not exist: #{@root}" unless Dir.exist?(@root)
+    raise "invalid OCI origin" unless oci_origin.match?(/\Ahttps?:\/\/[A-Za-z0-9.-]+(?::[0-9]+)?(?:\/[A-Za-z0-9._\/-]*)?\z/)
+
+    @oci_origin = oci_origin.chomp("/")
+    @mapping = load_mapping(mapping)
+  end
+
+  def mount(server)
+    server.mount_proc("/") do |request, response|
+      serve(request, response)
+    end
+  end
+
+  private
+
+  def load_mapping(path)
+    return {} unless File.file?(path)
+
+    data = JSON.parse(File.read(path))
+    raise "URL mapping must be an object" unless data.is_a?(Hash)
+
+    data.each_with_object({}) do |(url, value), result|
+      sha = value.is_a?(Hash) ? value["sha256"] : value
+      raise "invalid SHA256 for URL mapping #{url}" unless url.start_with?("http://", "https://") && sha.to_s.match?(SHA256)
+
+      result[url] = sha.downcase
+    end
+  end
+
+  def serve(request, response)
+    unless %w[GET HEAD].include?(request.request_method)
+      response.status = 405
+      response["Allow"] = "GET, HEAD"
+      response.body = "method not allowed\n"
+      return
+    end
+
+    sha = resolve_sha(request)
+    return missing(response) unless sha
+
+    path = object_path(sha)
+    return missing(response) unless File.file?(path)
+    return missing(response) unless inside_root?(File.realpath(path))
+    return corrupt(response, path, sha) unless Digest::SHA256.file(path).hexdigest == sha
+
+    size = File.size(path)
+    requested_range = byte_range(request["range"], size)
+    if requested_range == :invalid
+      response.status = 416
+      response["Content-Range"] = "bytes */#{size}"
+      response.body = "invalid range\n"
+      return
+    end
+
+    start_byte, end_byte = requested_range || [0, size - 1]
+    length = size.zero? ? 0 : end_byte - start_byte + 1
+    response.status = requested_range ? 206 : 200
+    response["Accept-Ranges"] = "bytes"
+    response["Content-Length"] = length.to_s
+    response["Content-Type"] = "application/octet-stream"
+    response["Content-Type"] = "application/vnd.oci.image.index.v1+json" if request.path.include?("/manifests/")
+    response["ETag"] = %Q{"#{sha}"}
+    response["Docker-Content-Digest"] = "sha256:#{sha}" if request.path.start_with?("/v2/")
+    response["Cache-Control"] = "public, max-age=31536000, immutable"
+    response["Content-Range"] = "bytes #{start_byte}-#{end_byte}/#{size}" if requested_range
+    return if request.request_method == "HEAD"
+
+    io = File.open(path, "rb")
+    io.seek(start_byte) unless size.zero?
+    response.body = io
+  end
+
+  def resolve_sha(request)
+    paths = [request.path, request.unparsed_uri.to_s.split("?", 2).first].compact.uniq
+    paths.each do |raw_path|
+      path = URI::DEFAULT_PARSER.unescape(raw_path)
+      direct = path.match(%r{\A/sha256/([0-9a-f]{2})/([0-9a-f]{2})/(#{SHA256_BODY})\z})
+      if direct && direct[1] == direct[3][0, 2] && direct[2] == direct[3][2, 2]
+        return direct[3]
+      end
+
+      blob = path.match(%r{\A/v2/.+/blobs/sha256:(#{SHA256_BODY})\z})
+      return blob[1] if blob
+
+      url = path.sub(%r{\A/}, "")
+      query = request.query_string
+      url = "#{url}?#{query}" unless query.to_s.empty?
+      return @mapping[url] if @mapping[url]
+      return @mapping[url.sub(%r{\Ahttps:/}, "https://")] if url.start_with?("https:/")
+      if path.start_with?("/v2/")
+        oci_url = "#{@oci_origin}#{path}"
+        oci_url = "#{oci_url}?#{query}" unless query.to_s.empty?
+        return @mapping[oci_url] if @mapping[oci_url]
+      end
+    end
+    nil
+  rescue ArgumentError
+    nil
+  end
+
+  def object_path(sha)
+    File.join(@root, "sha256", sha[0, 2], sha[2, 2], sha)
+  end
+
+  def inside_root?(path)
+    root = File.realpath(@root)
+    path == root || path.start_with?("#{root}#{File::SEPARATOR}")
+  rescue Errno::ENOENT
+    false
+  end
+
+  def byte_range(header, size)
+    return nil if header.to_s.empty?
+    return :invalid unless header.match?(/\Abytes=\d*-\d*\z/)
+
+    range = header.delete_prefix("bytes=").split("-", 2)
+    if range[0].empty?
+      suffix = range[1].to_i
+      return :invalid if suffix.zero? || size.zero?
+
+      return [[size - suffix, 0].max, size - 1]
+    end
+
+    start_byte = range[0].to_i
+    return :invalid if start_byte >= size && size > 0
+    return :invalid if size.zero?
+
+    end_byte = range[1].empty? ? size - 1 : [range[1].to_i, size - 1].min
+    return :invalid if end_byte < start_byte
+
+    [start_byte, end_byte]
+  end
+
+  def missing(response)
+    response.status = 404
+    response.body = "not found\n"
+  end
+
+  def corrupt(response, path, sha)
+    warn "CAS object checksum mismatch: #{path}"
+    response.status = 500
+    response.body = "corrupt CAS object #{sha}\n"
+  end
+end
+
+options = {
+  root: "cas",
+  mapping: "cas/urls.json",
+  oci_origin: "https://ghcr.io",
+  bind: "127.0.0.1",
+  port: 8080
+}
+parser = OptionParser.new do |o|
+  o.banner = "Usage: cas-gateway [options]"
+  o.on("--root PATH", "CAS root (default: cas)") { |value| options[:root] = value }
+  o.on("--mapping PATH", "URL mapping JSON (default: cas/urls.json)") { |value| options[:mapping] = value }
+  o.on("--oci-origin URL", "upstream OCI origin (default: https://ghcr.io)") { |value| options[:oci_origin] = value }
+  o.on("--bind HOST", "bind address (default: 127.0.0.1)") { |value| options[:bind] = value }
+  o.on("--port PORT", Integer, "listen port (default: 8080)") { |value| options[:port] = value }
+  o.on("-h", "--help") { puts o; exit 0 }
+end
+
+begin
+  parser.parse!
+  # ponytail: single-process read-only gateway; put it behind a managed service when throughput requires it.
+  gateway = CasGateway.new(root: options[:root], mapping: options[:mapping], oci_origin: options[:oci_origin])
+  server = WEBrick::HTTPServer.new(
+    Port: options[:port],
+    BindAddress: options[:bind],
+    AccessLog: [],
+    Logger: WEBrick::Log.new($stderr, WEBrick::Log::WARN)
+  )
+  gateway.mount(server)
+  trap("INT") { server.shutdown }
+  trap("TERM") { server.shutdown }
+  server.start
+rescue OptionParser::ParseError, StandardError => e
+  warn "cas-gateway: #{e.message}"
+  exit 1
+end

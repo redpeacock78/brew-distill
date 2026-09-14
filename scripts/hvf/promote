@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  printf '%s\n' "usage: promote EVIDENCE.json [output.json]" >&2
+  exit 2
+fi
+evidence=$1
+output=${2:-}
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "hvf/promote: jq is required" >&2
+  exit 1
+}
+
+jq -e 'type == "object" and ((.stable_runs // 0) | type == "number")' "$evidence" >/dev/null
+level=$(jq -r '
+  def yes($key): (.[$key] // false) == true;
+  if ((.stable_runs // 0) >= 3) and
+      yes("license_review") and yes("fresh_overlay") and yes("provenance") and
+      yes("timing_acceptable") and yes("runtime_smoke") and yes("brew_test") and
+      yes("brew_linkage") then "production"
+  elif ((.stable_runs // 0) >= 2) and yes("fresh_overlay") and yes("provenance") and yes("runtime_smoke") and
+       yes("brew_test") and yes("brew_linkage") then "verified"
+  elif yes("guest") and yes("ssh") and yes("homebrew") and yes("bottle") then "experimental"
+  else "research"
+  end
+' "$evidence")
+
+if [ -n "$output" ]; then
+  jq --arg level "$level" '{schema:1,trust:$level,evidence:.}' "$evidence" > "$output"
+else
+  jq --arg level "$level" '{schema:1,trust:$level,evidence:.}' "$evidence"
+fi
+printf '%s\n' "trust=$level" >&2

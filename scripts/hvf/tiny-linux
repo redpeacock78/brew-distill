@@ -1,0 +1,37 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  printf '%s\n' "usage: tiny-linux DISK.qcow2 [output-dir]" >&2
+  exit 2
+fi
+repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+kernel=${DISTILL_LINUX_KERNEL:-}
+initrd=${DISTILL_LINUX_INITRD:-}
+case "$kernel:$initrd" in
+  :) ;;
+  :*|*:)
+    printf '%s\n' "tiny-linux: DISTILL_LINUX_KERNEL and DISTILL_LINUX_INITRD must be provided together" >&2
+    exit 2
+    ;;
+  *)
+    test -f "$kernel" || {
+      printf '%s\n' "tiny-linux: kernel does not exist: $kernel" >&2
+      exit 1
+    }
+    test -f "$initrd" || {
+      printf '%s\n' "tiny-linux: initrd does not exist: $initrd" >&2
+      exit 1
+    }
+    if [ -z "${DISTILL_QEMU_ARGS_JSON:-}" ] && [ -z "${DISTILL_QEMU_CONFIG:-}" ]; then
+      command -v jq >/dev/null 2>&1 || {
+        printf '%s\n' "tiny-linux: jq is required for kernel boot arguments" >&2
+        exit 1
+      }
+      DISTILL_QEMU_ARGS_JSON=$(jq -n --arg kernel "$kernel" --arg initrd "$initrd" \
+        '["-accel","hvf","-kernel",$kernel,"-initrd",$initrd,"-append","console=ttyS0"]')
+      export DISTILL_QEMU_ARGS_JSON
+    fi
+    ;;
+esac
+exec "$repo_dir/scripts/hvf/boot-guest" "$@"

@@ -1,0 +1,85 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+input_dir=${1:-out}
+release_root=${2:-release}
+run_id=${3:-local}
+attempt=${4:-1}
+
+case "$run_id" in
+  ""|*[!A-Za-z0-9._-]*)
+    printf '%s\n' "usage: package-release [input-dir] [release-dir] [run-id] [attempt]" >&2
+    exit 2
+    ;;
+esac
+case "$attempt" in
+  ""|*[!0-9]*)
+    printf '%s\n' "usage: package-release [input-dir] [release-dir] [run-id] [attempt]" >&2
+    exit 2
+    ;;
+esac
+
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "package-release: jq is required" >&2
+  exit 1
+}
+command -v shasum >/dev/null 2>&1 || {
+  printf '%s\n' "package-release: shasum is required" >&2
+  exit 1
+}
+command -v tar >/dev/null 2>&1 || {
+  printf '%s\n' "package-release: tar is required" >&2
+  exit 1
+}
+
+repo_dir=$(cd -- "$(dirname -- "$0")/.." && pwd)
+input_dir=$(cd -- "$input_dir" && pwd)
+release_name="distill-build-${run_id}-${attempt}"
+release_dir="$release_root/$release_name"
+
+if [ -e "$release_dir" ]; then
+  printf '%s\n' "package-release: release already exists: $release_dir" >&2
+  exit 1
+fi
+mkdir -p "$release_dir"
+
+find "$input_dir" -type f \( -name '*.bottle.tar.gz' -o -name '*.bottle.json' -o -name '*.manifest.json' \) \
+  -exec cp {} "$release_dir/" \;
+
+if ! find "$release_dir" -type f -name '*.bottle.tar.gz' -print | grep -q .; then
+  printf '%s\n' "package-release: no Bottle artifacts in $input_dir" >&2
+  exit 1
+fi
+if ! find "$release_dir" -type f -name '*.manifest.json' -print | grep -q .; then
+  printf '%s\n' "package-release: no Bottle manifests in $input_dir" >&2
+  exit 1
+fi
+
+for manifest in "$release_dir"/*.manifest.json; do
+  "$repo_dir/homebrew-distill" verify "$manifest" >/dev/null
+done
+
+jq -s --arg release "$release_name" \
+  '{schema: 4, release: $release, bottles: map({formula, platform, builder, dependencies, toolchain, network, artifact})}' \
+  "$release_dir"/*.manifest.json > "$release_dir/manifest.json"
+"$repo_dir/homebrew-distill" doctor --registry "$release_dir/manifest.json" >/dev/null
+
+metadata_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-metadata.XXXXXX")
+cleanup() {
+  rm -rf "$metadata_dir"
+}
+trap cleanup EXIT HUP INT TERM
+cp "$release_dir/manifest.json" "$metadata_dir/"
+find "$release_dir" -type f -name '*.bottle.json' -exec cp {} "$metadata_dir/" \;
+find "$release_dir" -type f -name '*.manifest.json' -exec cp {} "$metadata_dir/" \;
+tar -czf "$release_dir/metadata.tar.gz" -C "$metadata_dir" .
+
+find "$release_dir" -type f \( -name '*.bottle.tar.gz' -o -name '*.bottle.json' -o -name '*.manifest.json' -o -name 'manifest.json' -o -name 'metadata.tar.gz' \) \
+  -exec shasum -a 256 {} + | sed "s#^$release_dir/##" > "$release_dir/checksums.txt"
+
+printf '%s\n' "Release: $release_dir"
+printf '%s\n' "Manifest: $release_dir/manifest.json"
+printf '%s\n' "Checksums: $release_dir/checksums.txt"
+printf '%s\n' "Metadata: $release_dir/metadata.tar.gz"

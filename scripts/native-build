@@ -1,0 +1,88 @@
+#!/bin/sh
+set -eu
+
+formula=${1:-csound}
+output_dir=${2:-out}
+
+case "$formula" in
+  ""|-*|*[!A-Za-z0-9@+._/-]*)
+    printf '%s\n' "usage: native-build [formula] [output-dir]" >&2
+    exit 2
+    ;;
+esac
+
+command -v brew >/dev/null 2>&1 || {
+  printf '%s\n' "native-build: brew is required" >&2
+  exit 1
+}
+
+if [ "${DISTILL_RELEASE_BUILD:-0}" = "1" ]; then
+  case "${HOMEBREW_ARTIFACT_DOMAIN:-}" in
+    https://?*) ;;
+    *)
+      printf '%s\n' "native-build: DISTILL_RELEASE_BUILD requires HTTPS HOMEBREW_ARTIFACT_DOMAIN" >&2
+      exit 2
+      ;;
+  esac
+  case "$HOMEBREW_ARTIFACT_DOMAIN" in
+    *[!A-Za-z0-9./:_-]*)
+      printf '%s\n' "native-build: invalid HOMEBREW_ARTIFACT_DOMAIN" >&2
+      exit 2
+      ;;
+  esac
+  [ "${HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK:-0}" = "1" ] || {
+    printf '%s\n' "native-build: release build requires HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK=1" >&2
+    exit 2
+  }
+fi
+
+unset CDPATH
+repo_dir=$(cd -- "$(dirname -- "$0")/.." && pwd)
+mkdir -p "$output_dir"
+output_dir=$(cd -- "$output_dir" && pwd)
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-native.XXXXXX")
+
+cleanup() {
+  rm -rf "$work_dir"
+}
+trap cleanup EXIT HUP INT TERM
+
+export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
+safe_name=$(printf '%s' "$formula" | tr '/@+' '___')
+
+cd "$work_dir"
+brew install --build-bottle --formula "$formula"
+brew config > "$output_dir/brew-config.txt"
+brew doctor > "$output_dir/brew-doctor.txt" 2>&1 || true
+brew test "$formula" > "$output_dir/$safe_name.test.txt" 2>&1
+brew linkage --test "$formula" > "$output_dir/$safe_name.linkage.txt" 2>&1
+
+if [ "$formula" = "csound" ]; then
+  csound_bin=$(brew --prefix "$formula")/bin/csound
+  "$csound_bin" -d -o "$work_dir/smoke.wav" "$repo_dir/tests/smoke.csd"
+  test -s "$work_dir/smoke.wav"
+  cp "$work_dir/smoke.wav" "$output_dir/$safe_name.smoke.wav"
+fi
+
+brew bottle --json "$formula"
+bottle=$(find . -type f -name '*.bottle.tar.gz' -print | sed -n '1p')
+bottle_json=$(find . -type f -name '*.bottle.json' -print | sed -n '1p')
+
+if [ -z "$bottle" ] || [ -z "$bottle_json" ]; then
+  printf '%s\n' "native-build: brew bottle did not produce Bottle and JSON" >&2
+  exit 1
+fi
+
+bottle_name=$(basename "$bottle")
+json_name=$(basename "$bottle_json")
+cp "$bottle" "$output_dir/$bottle_name"
+cp "$bottle_json" "$output_dir/$json_name"
+
+manifest_path="$output_dir/${bottle_name%.tar.gz}.manifest.json"
+"$repo_dir/homebrew-distill" manifest "$formula" \
+  --artifact "$output_dir/$bottle_name" \
+  --output "$manifest_path"
+
+printf '%s\n' "Bottle: $output_dir/$bottle_name"
+printf '%s\n' "Bottle JSON: $output_dir/$json_name"
+printf '%s\n' "Manifest: $manifest_path"

@@ -1,0 +1,81 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "fileutils"
+require "json"
+
+def fail_with(message)
+  warn "boot-guest: #{message}"
+  exit 1
+end
+
+unless ARGV.length.between?(1, 2)
+  warn "usage: boot-guest OVERLAY.qcow2 [output-dir]"
+  exit 2
+end
+
+host_os = IO.popen(["uname", "-s"], &:read).strip
+unless host_os == "Darwin" || ENV["DISTILL_ALLOW_NON_DARWIN"] == "1"
+  fail_with "HVF requires macOS"
+end
+
+disk = File.expand_path(ARGV[0])
+output_dir = File.expand_path(ARGV[1] || "out/hvf")
+fail_with "overlay does not exist: #{disk}" unless File.file?(disk)
+unless ENV["DISTILL_ALLOW_NON_DARWIN"] == "1"
+  probe = File.expand_path("probe", __dir__)
+  fail_with "HVF probe failed" unless system(probe, output_dir)
+end
+
+qemu = ENV.fetch("QEMU_SYSTEM_X86_64", "qemu-system-x86_64")
+config_path = ENV["DISTILL_QEMU_CONFIG"]
+config = {}
+if config_path
+  begin
+    config = JSON.parse(File.read(config_path))
+  rescue Errno::ENOENT, JSON::ParserError => e
+    fail_with "cannot read QEMU config #{config_path}: #{e.message}"
+  end
+end
+fail_with "QEMU config must be an object" unless config.is_a?(Hash)
+args = config["qemu_args"] || begin
+  raw = ENV["DISTILL_QEMU_ARGS_JSON"]
+  raw ? JSON.parse(raw) : nil
+rescue JSON::ParserError => e
+  fail_with "invalid DISTILL_QEMU_ARGS_JSON: #{e.message}"
+end
+args ||= [
+  "-accel", "hvf",
+  "-machine", "q35",
+  "-cpu", "host",
+  "-m", ENV.fetch("DISTILL_QEMU_MEMORY", "8192"),
+  "-smp", ENV.fetch("DISTILL_QEMU_SMP", "4"),
+  "-display", "none",
+  "-nographic"
+]
+fail_with "QEMU args must be an array of strings" unless args.is_a?(Array) && args.all? { |arg| arg.is_a?(String) }
+
+FileUtils.mkdir_p(output_dir)
+serial_log = File.join(output_dir, "guest-console.log")
+replacements = {
+  "{{DISK}}" => disk,
+  "{{SERIAL_LOG}}" => serial_log,
+  "{{OPENCORE}}" => ENV.fetch("DISTILL_OPENCORE_DISK", "")
+}
+args = args.map do |arg|
+  replacements.each { |from, to| arg = arg.gsub(from, to) }
+  arg
+end
+args += ["-serial", "file:#{serial_log}"] unless args.any? { |arg| arg == "-serial" || arg.start_with?("-serial=") }
+args += ["-drive", "file=#{disk},format=qcow2"] unless args.any? { |arg| arg.include?(disk) }
+
+unless args.each_cons(2).any? { |left, right| left == "-accel" && right == "hvf" } ||
+       args.any? { |arg| arg == "-accel=hvf" }
+  fail_with "QEMU args must request the hvf accelerator"
+end
+
+begin
+  exec qemu, *args
+rescue Errno::ENOENT
+  fail_with "QEMU executable is unavailable: #{qemu}"
+end

@@ -1,0 +1,45 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
+  printf '%s\n' "usage: wait-ssh TARGET [port] [timeout-seconds]" >&2
+  exit 2
+fi
+target=$1
+port=${2:-${DISTILL_GUEST_SSH_PORT:-2222}}
+timeout=${3:-${DISTILL_SSH_TIMEOUT:-600}}
+output=${DISTILL_GUEST_INFO:-out/hvf/guest-info.txt}
+ssh_cmd=${DISTILL_SSH:-ssh}
+
+case "$port" in ""|*[!0-9]*) printf '%s\n' "wait-ssh: invalid port" >&2; exit 2 ;; esac
+case "$timeout" in ""|*[!0-9]*) printf '%s\n' "wait-ssh: invalid timeout" >&2; exit 2 ;; esac
+command -v "$ssh_cmd" >/dev/null 2>&1 || {
+  printf '%s\n' "wait-ssh: ssh is required" >&2
+  exit 1
+}
+mkdir -p "$(dirname -- "$output")"
+
+start=$(date +%s)
+while :; do
+  if [ -n "${DISTILL_GUEST_KNOWN_HOSTS:-}" ]; then
+    if "$ssh_cmd" -o BatchMode=yes -o ConnectTimeout=5 \
+      -o UserKnownHostsFile="$DISTILL_GUEST_KNOWN_HOSTS" -p "$port" "$target" \
+      'uname -a && sw_vers' > "$output" 2>&1; then
+      printf '%s\n' "SSH ready: $target:$port"
+      exit 0
+    fi
+  elif "$ssh_cmd" -o BatchMode=yes -o ConnectTimeout=5 \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$port" "$target" \
+    'uname -a && sw_vers' > "$output" 2>&1; then
+    printf '%s\n' "SSH ready: $target:$port"
+    exit 0
+  fi
+  now=$(date +%s)
+  [ $((now - start)) -lt "$timeout" ] || break
+  sleep 2
+done
+
+printf '%s\n' "wait-ssh: timeout waiting for $target:$port" >&2
+exit 1

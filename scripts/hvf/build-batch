@@ -1,0 +1,204 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -ne 1 ]; then
+  printf '%s\n' "usage: build-batch BATCH.json" >&2
+  exit 2
+fi
+batch=$1
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "hvf/build-batch: jq is required" >&2
+  exit 1
+}
+repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+if [ "${DISTILL_RELEASE_BUILD:-0}" = "1" ]; then
+  case "${HOMEBREW_ARTIFACT_DOMAIN:-}" in
+    https://?*) ;;
+    *)
+      printf '%s\n' "hvf/build-batch: release build requires HTTPS HOMEBREW_ARTIFACT_DOMAIN" >&2
+      exit 2
+      ;;
+  esac
+  case "$HOMEBREW_ARTIFACT_DOMAIN" in
+    *[!A-Za-z0-9./:_-]*)
+      printf '%s\n' "hvf/build-batch: invalid HOMEBREW_ARTIFACT_DOMAIN" >&2
+      exit 2
+      ;;
+  esac
+  [ "${HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK:-0}" = "1" ] || {
+    printf '%s\n' "hvf/build-batch: release build requires HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK=1" >&2
+    exit 2
+  }
+fi
+jq -e '
+  (.formulas | type == "array" and length > 0) and
+  (.formulas | all(type == "string" and test("^[A-Za-z0-9@+._/-]+$") and (startswith("-") | not))) and
+  (.formulas | length == (unique | length)) and
+  ((.dependencies // {}) | type == "object" and
+    all(to_entries[]; .value | type == "array" and all(.[]; type == "string" and test("^[A-Za-z0-9@+._/-]+$") and (startswith("-") | not))))
+' "$batch" >/dev/null
+if ! jq -e '
+  (.formulas) as $formulas |
+  [(.dependencies // {}) | to_entries[] as $entry |
+    $entry.value[] as $dependency |
+    select(($formulas | index($dependency)) != null) |
+    select(($formulas | index($dependency)) > ($formulas | index($entry.key)))] |
+  length == 0
+' "$batch" >/dev/null; then
+  printf '%s\n' "hvf/build-batch: formulas must list batch dependencies before dependents" >&2
+  exit 2
+fi
+
+base=${DISTILL_BASE_IMAGE:-out/hvf/base.qcow2}
+artifact_dir=${DISTILL_ARTIFACT_DIR:-out}
+overlay_dir=${DISTILL_OVERLAY_DIR:-$artifact_dir/overlays}
+builder=${DISTILL_GUEST_BUILD:-}
+verify_after_build=${DISTILL_VERIFY_AFTER_BUILD:-0}
+results="$artifact_dir/batch-results.json"
+case "$verify_after_build" in
+  0|1) ;;
+  *)
+    printf '%s\n' "hvf/build-batch: DISTILL_VERIFY_AFTER_BUILD must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
+mkdir -p "$artifact_dir" "$overlay_dir"
+test -f "$base" || {
+  printf '%s\n' "hvf/build-batch: base image does not exist: $base" >&2
+  exit 1
+}
+test -n "$builder" || {
+  printf '%s\n' "hvf/build-batch: DISTILL_GUEST_BUILD is required" >&2
+  exit 1
+}
+if [ ! -x "$builder" ]; then
+  builder_path=$(command -v "$builder" 2>/dev/null || true)
+  [ -n "$builder_path" ] || {
+    printf '%s\n' "hvf/build-batch: guest builder is not executable: $builder" >&2
+    exit 1
+  }
+builder=$builder_path
+fi
+if [ "$verify_after_build" = "1" ]; then
+  command -v shasum >/dev/null 2>&1 || {
+    printf '%s\n' "hvf/build-batch: shasum is required for fresh verification" >&2
+    exit 1
+  }
+fi
+
+printf '%s\n' '{}' > "$results"
+batch_started=$(date +%s)
+status=0
+while IFS= read -r formula; do
+  blocked=
+  while IFS= read -r dependency; do
+    [ -n "$dependency" ] || continue
+    if ! jq -e --arg dependency "$dependency" '.formulas | index($dependency) != null' "$batch" >/dev/null; then
+      continue
+    fi
+    dependency_status=$(jq -r --arg dependency "$dependency" \
+      '.[$dependency].status // "NOT_BUILT"' "$results")
+    case "$dependency_status" in
+      PASS) ;;
+      *) blocked=${blocked:+$blocked,}$dependency ;;
+    esac
+  done <<EOF
+$(jq -r --arg formula "$formula" '.dependencies[$formula] // [] | .[]' "$batch")
+EOF
+
+  safe_name=$(printf '%s' "$formula" | tr '/@+' '___')
+  overlay="$overlay_dir/$safe_name.qcow2"
+  formula_file=${formula##*/}
+  artifact_pattern="$formula_file*.bottle.tar.gz"
+  if [ -n "$blocked" ]; then
+    jq --arg formula "$formula" --arg blocked "$blocked" \
+      '.[$formula] = {status:"SKIPPED_DEPENDENCY",dependencies:$blocked}' \
+      "$results" > "$results.tmp"
+    mv "$results.tmp" "$results"
+    printf '%s\n' "SKIPPED_DEPENDENCY $formula ($blocked)"
+    status=1
+    continue
+  fi
+
+  if find "$artifact_dir" -type f -name "$artifact_pattern" -print | grep -q .; then
+    jq --arg formula "$formula" \
+      '.[$formula] = {status:"FAIL",reason:"artifact already exists"}' \
+      "$results" > "$results.tmp"
+    mv "$results.tmp" "$results"
+    printf '%s\n' "FAIL $formula (artifact already exists)"
+    status=1
+    continue
+  fi
+
+  if ! "$repo_dir/scripts/hvf/create-overlay" "$base" "$overlay" >/dev/null; then
+    jq --arg formula "$formula" \
+      '.[$formula] = {status:"FAIL",reason:"overlay creation failed"}' \
+      "$results" > "$results.tmp"
+    mv "$results.tmp" "$results"
+    printf '%s\n' "FAIL $formula"
+    status=1
+    continue
+  fi
+
+  started=$(date +%s)
+  set +e
+  "$builder" "$formula" "$overlay" "$artifact_dir"
+  build_status=$?
+  set -e
+  finished=$(date +%s)
+  elapsed=$((finished - started))
+  result_status=PASS
+  if [ "$build_status" -ne 0 ]; then
+    result_status=FAIL
+    status=1
+  elif [ "${DISTILL_REQUIRE_ARTIFACT:-1}" = "1" ] &&
+       ! find "$artifact_dir" -type f -name "$artifact_pattern" -print | grep -q .; then
+    result_status=FAIL
+    status=1
+    build_status=1
+  fi
+  if [ "$result_status" = PASS ] && [ "$verify_after_build" = "1" ]; then
+    bottle=$(find "$artifact_dir" -type f -name "$artifact_pattern" -print | sed -n '1p')
+    bottle_base=$(basename -- "$bottle")
+    manifest=$(find "$artifact_dir" -maxdepth 1 -type f \
+      -name "${bottle_base%.tar.gz}.manifest.json" -print | sed -n '1p')
+    expected_sha=
+    if [ -n "$manifest" ]; then
+      expected_sha=$(jq -r '.artifact.sha256 // empty' "$manifest" || true)
+    fi
+    if [ -z "$expected_sha" ] ||
+       ! DISTILL_BOTTLE_SHA256="$expected_sha" \
+         DISTILL_GUEST_VERIFY="${DISTILL_GUEST_VERIFY:-$repo_dir/scripts/hvf/verify-formula}" \
+         "$repo_dir/scripts/hvf/verify-bottle" "$formula" "$bottle" "$base" "$artifact_dir"; then
+      result_status=FAIL
+      status=1
+      build_status=1
+    fi
+  fi
+  jq --arg formula "$formula" --arg result_status "$result_status" \
+    --argjson seconds "$elapsed" --argjson exit_code "$build_status" \
+    '.[$formula] = {status:$result_status,seconds:$seconds,exit_code:$exit_code}' \
+    "$results" > "$results.tmp"
+  mv "$results.tmp" "$results"
+  printf '%s\n' "$result_status $formula seconds=$elapsed"
+  if [ "${DISTILL_KEEP_OVERLAYS:-0}" != "1" ]; then
+    rm -f -- "$overlay"
+  fi
+done <<EOF
+$(jq -r '.formulas[]' "$batch")
+EOF
+
+batch_finished=$(date +%s)
+jq -n \
+  --argjson disk_reclaim "${DISTILL_DISK_RECLAIM_SECONDS:-0}" \
+  --argjson guest_bootstrap "${DISTILL_BATCH_BOOTSTRAP_SECONDS:-0}" \
+  --argjson homebrew_bootstrap "${DISTILL_HOMEBREW_BOOTSTRAP_SECONDS:-0}" \
+  --argjson upload "${DISTILL_BATCH_UPLOAD_SECONDS:-0}" \
+  --argjson batch_seconds "$((batch_finished - batch_started))" \
+  --slurpfile formulas "$results" \
+  '{schema:1,disk_reclaim_seconds:$disk_reclaim,guest_bootstrap_seconds:$guest_bootstrap,homebrew_bootstrap_seconds:$homebrew_bootstrap,upload_seconds:$upload,batch_seconds:$batch_seconds,formulas:$formulas[0]}' \
+  > "$artifact_dir/timings.json"
+
+exit "$status"

@@ -1,0 +1,64 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+output_dir=${1:-out/hvf}
+minimum_gib=${2:-35}
+snapshot=${3:-before}
+
+case "$minimum_gib" in
+  ""|*[!0-9]*)
+    printf '%s\n' "usage: disk-audit [output-dir] [minimum-free-gib] [before|after]" >&2
+    exit 2
+    ;;
+esac
+case "$snapshot" in
+  before|after) ;;
+  *)
+    printf '%s\n' "usage: disk-audit [output-dir] [minimum-free-gib] [before|after]" >&2
+    exit 2
+    ;;
+esac
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "hvf/disk-audit: jq is required" >&2
+  exit 1
+}
+
+mkdir -p "$output_dir"
+report="$output_dir/disk-$snapshot.txt"
+df -h / > "$report"
+printf '%s\n' '' 'Candidate large paths:' >> "$report"
+candidate_list=${DISTILL_DISK_CANDIDATES-"/Applications/Xcode*.app:$HOME/Library/Developer/CoreSimulator:/Library/Developer/CoreSimulator:$HOME/Library/Android/sdk"}
+old_ifs=$IFS
+IFS=:
+for candidate in $candidate_list; do
+  [ -e "$candidate" ] || continue
+  du -sh "$candidate" >> "$report" 2>/dev/null || true
+done
+IFS=$old_ifs
+
+free_kib=$(df -Pk / | awk 'NR == 2 {print $4}')
+case "$free_kib" in
+  ""|*[!0-9]*)
+    printf '%s\n' "hvf/disk-audit: could not read free space" >&2
+    exit 1
+    ;;
+esac
+minimum_kib=$((minimum_gib * 1024 * 1024))
+sufficient=0
+[ "$free_kib" -ge "$minimum_kib" ] && sufficient=1
+jq -n \
+  --arg snapshot "$snapshot" \
+  --argjson free_kib "$free_kib" \
+  --argjson minimum_kib "$minimum_kib" \
+  --argjson sufficient "$sufficient" \
+  '{snapshot:$snapshot,root_free_kib:$free_kib,minimum_free_kib:$minimum_kib,sufficient:($sufficient == 1)}' \
+  > "$output_dir/disk-$snapshot.json"
+
+if [ "$sufficient" -ne 1 ]; then
+  printf '%s\n' "LEGACY_DISK_INSUFFICIENT"
+  exit 1
+fi
+
+printf '%s\n' "disk sufficient: ${free_kib} KiB free"

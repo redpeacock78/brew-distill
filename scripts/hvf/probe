@@ -1,0 +1,52 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+output_dir=${1:-out/hvf}
+qemu=${QEMU_SYSTEM_X86_64:-qemu-system-x86_64}
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "hvf/probe: jq is required" >&2
+  exit 1
+}
+
+mkdir -p "$output_dir"
+host_os=$(uname -s)
+host_uname=$(uname -a)
+hv_support=$(sysctl -n kern.hv_support 2>/dev/null) || hv_support=unavailable
+cpu_brand=$(sysctl -n machdep.cpu.brand_string 2>/dev/null) || cpu_brand=unavailable
+qemu_path=$(command -v "$qemu" 2>/dev/null || true)
+qemu_version=
+accelerators=
+qemu_status=unavailable
+
+if [ -n "$qemu_path" ]; then
+  qemu_version=$("$qemu_path" --version 2>&1) || qemu_version=
+  accelerators=$("$qemu_path" -accel help 2>&1) && qemu_status=ok || qemu_status=failed
+fi
+
+hvf=0
+if [ "$host_os" = "Darwin" ] && [ "$hv_support" = "1" ] && [ "$qemu_status" = "ok" ] &&
+  printf '%s\n' "$accelerators" | grep -Eq '(^|[[:space:]])hvf($|[[:space:]])'; then
+  hvf=1
+fi
+
+jq -n \
+  --arg host_os "$host_os" \
+  --arg host_uname "$host_uname" \
+  --arg hv_support "$hv_support" \
+  --arg cpu_brand "$cpu_brand" \
+  --arg qemu "$qemu_path" \
+  --arg qemu_version "$qemu_version" \
+  --arg qemu_status "$qemu_status" \
+  --arg accelerators "$accelerators" \
+  --arg hvf "$hvf" \
+  '{host:{os:$host_os,uname:$host_uname,hv_support:$hv_support,cpu_brand:$cpu_brand},qemu:{path:$qemu,version:$qemu_version,status:$qemu_status,accelerators:$accelerators,hvf:($hvf == "1")}}' \
+  > "$output_dir/host-info.json"
+
+if [ "$hvf" -ne 1 ]; then
+  printf '%s\n' "LEGACY_HVF_UNAVAILABLE"
+  exit 1
+fi
+
+printf '%s\n' "HVF available"

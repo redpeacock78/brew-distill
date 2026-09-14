@@ -1,0 +1,64 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+  printf '%s\n' "usage: publish-release RELEASE-DIR TAG [OWNER/REPO]" >&2
+  exit 2
+fi
+release_dir=$1
+tag=$2
+repo=${3:-${GH_REPO:-}}
+case "$tag" in
+  ""|-*|*[!A-Za-z0-9._/-]*)
+    printf '%s\n' "publish-release: invalid release tag: $tag" >&2
+    exit 2
+    ;;
+esac
+case "$repo" in
+  ""|*[!A-Za-z0-9._/-]*|*/*/*)
+    printf '%s\n' "publish-release: OWNER/REPO is required" >&2
+    exit 2
+    ;;
+esac
+test -d "$release_dir" || {
+  printf '%s\n' "publish-release: release directory does not exist: $release_dir" >&2
+  exit 1
+}
+command -v gh >/dev/null 2>&1 || {
+  printf '%s\n' "publish-release: gh is required" >&2
+  exit 1
+}
+command -v shasum >/dev/null 2>&1 || {
+  printf '%s\n' "publish-release: shasum is required" >&2
+  exit 1
+}
+test "${DISTILL_PUBLISH:-0}" = "1" || {
+  printf '%s\n' "publish-release: set DISTILL_PUBLISH=1 to publish" >&2
+  exit 2
+}
+for file in manifest.json checksums.txt metadata.tar.gz; do
+  test -s "$release_dir/$file" || {
+    printf '%s\n' "publish-release: missing release asset: $release_dir/$file" >&2
+    exit 1
+  }
+done
+find "$release_dir" -type f -name '*.bottle.tar.gz' -print | grep -q . || {
+  printf '%s\n' "publish-release: no Bottle assets" >&2
+  exit 1
+}
+(cd "$release_dir" && shasum -a 256 -c checksums.txt >/dev/null)
+
+if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+  printf '%s\n' "publish-release: release already exists: $tag" >&2
+  exit 1
+fi
+
+set -- "$release_dir/manifest.json" "$release_dir/checksums.txt" "$release_dir/metadata.tar.gz"
+for pattern in "$release_dir"/*.bottle.tar.gz "$release_dir"/*.bottle.json "$release_dir"/*.manifest.json; do
+  [ -f "$pattern" ] && set -- "$@" "$pattern"
+done
+gh release create "$tag" --repo "$repo" --title "$tag" \
+  --notes-file "$release_dir/manifest.json" "$@"
+printf '%s\n' "published $repo:$tag"

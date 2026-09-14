@@ -1,0 +1,95 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -ne 2 ]; then
+  printf '%s\n' "usage: legacy-poc MACOS_VERSION BATCH.json" >&2
+  exit 2
+fi
+macos_version=$1
+batch=$2
+case "$macos_version" in
+  11|11.[0-9]*|12|12.[0-9]*|13|13.[0-9]*|14|14.[0-9]*) ;;
+  *)
+    printf '%s\n' "legacy-poc: version must be a numeric Big Sur through Sonoma version" >&2
+    exit 2
+    ;;
+esac
+case "$macos_version" in
+  *[!0-9.]*)
+    printf '%s\n' "legacy-poc: version must contain only digits and dots" >&2
+    exit 2
+    ;;
+esac
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "legacy-poc: jq is required" >&2
+  exit 1
+}
+
+repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+output_dir=${DISTILL_LEGACY_OUTPUT_DIR:-out}
+hvf_dir="$output_dir/hvf"
+artifact_dir=${DISTILL_ARTIFACT_DIR:-$output_dir/artifacts}
+base=${DISTILL_BASE_IMAGE:-$hvf_dir/base.qcow2}
+installer_version=${DISTILL_INSTALLER_VERSION:-$macos_version}
+major=${macos_version%%.*}
+bootstrap=${DISTILL_LEGACY_BOOTSTRAP:-}
+diagnostics_archive=${DISTILL_DIAGNOSTICS_ARCHIVE:-}
+
+mkdir -p "$hvf_dir" "$artifact_dir"
+finish() {
+  status=$?
+  trap - EXIT
+  "$repo_dir/scripts/hvf/export-diagnostics" "$output_dir" "$diagnostics_archive" >/dev/null 2>&1 || true
+  exit "$status"
+}
+trap finish EXIT HUP INT TERM
+
+"$repo_dir/scripts/hvf/probe" "$hvf_dir"
+if [ "${DISTILL_RECLAIM_DISK:-0}" = "1" ]; then
+  "$repo_dir/scripts/hvf/reclaim-disk" "$hvf_dir" apply
+else
+  "$repo_dir/scripts/hvf/reclaim-disk" "$hvf_dir" report
+fi
+"$repo_dir/scripts/hvf/fetch-installer" "$installer_version" "$hvf_dir"
+"$repo_dir/scripts/hvf/prepare-opencore" "$major" "$hvf_dir/opencore"
+"$repo_dir/scripts/hvf/create-base" "$base" "${DISTILL_BASE_SIZE:-64G}" "$hvf_dir"
+
+test -n "$bootstrap" || {
+  printf '%s\n' "legacy-poc: DISTILL_LEGACY_BOOTSTRAP is required" >&2
+  exit 1
+}
+if [ ! -x "$bootstrap" ]; then
+  bootstrap_path=$(command -v "$bootstrap" 2>/dev/null || true)
+  [ -n "$bootstrap_path" ] || {
+    printf '%s\n' "legacy-poc: bootstrap hook is not executable: $bootstrap" >&2
+    exit 1
+  }
+  bootstrap=$bootstrap_path
+fi
+installer=$(jq -r '.installer // empty' "$hvf_dir/installer.json")
+test -n "$installer" || {
+  printf '%s\n' "legacy-poc: installer metadata has no installer path" >&2
+  exit 1
+}
+
+# The hook runs the macOS guest bootstrap and Homebrew setup. It must return
+# with an installed guest in BASE.qcow2; startosinstall is never run here.
+"$bootstrap" "$installer" "$base" "$hvf_dir/opencore" "$hvf_dir"
+test -f "$base" || {
+  printf '%s\n' "legacy-poc: bootstrap hook did not return a base image" >&2
+  exit 1
+}
+"$repo_dir/scripts/hvf/freeze-base" "$base" "$hvf_dir"
+
+cas_dir=${DISTILL_CAS_DIR:-$output_dir/cas}
+mapping=${DISTILL_CAS_MAPPING:-$cas_dir/urls.json}
+"$repo_dir/scripts/prefetch-batch" "$batch" "$cas_dir" "$mapping"
+DISTILL_BASE_IMAGE="$base" \
+DISTILL_ARTIFACT_DIR="$artifact_dir" \
+DISTILL_OVERLAY_DIR="${DISTILL_OVERLAY_DIR:-$artifact_dir/overlays}" \
+DISTILL_GUEST_BUILD="${DISTILL_GUEST_BUILD:-$repo_dir/scripts/hvf/build-formula}" \
+  "$repo_dir/scripts/hvf/build-batch" "$batch"
+
+printf '%s\n' "legacy PoC complete: $output_dir"

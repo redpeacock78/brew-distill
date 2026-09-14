@@ -1,0 +1,39 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -gt 3 ]; then
+  printf '%s\n' "usage: create-base [BASE.qcow2] [SIZE] [output-dir]" >&2
+  exit 2
+fi
+base_arg=${1:-${DISTILL_BASE_IMAGE:-out/hvf/base.qcow2}}
+size=${2:-${DISTILL_BASE_SIZE:-64G}}
+output_dir=${3:-out/hvf}
+case "$size" in
+  ''|*[!0-9KMGTkmgt]*)
+    printf '%s\n' "create-base: invalid image size: $size" >&2
+    exit 2
+    ;;
+esac
+base_dir=$(dirname -- "$base_arg")
+base_name=$(basename -- "$base_arg")
+mkdir -p "$base_dir" "$output_dir"
+base=$(cd -- "$base_dir" && pwd)/$base_name
+test ! -e "$base" || {
+  printf '%s\n' "create-base: image already exists: $base" >&2
+  exit 1
+}
+qemu_img=${QEMU_IMG:-qemu-img}
+command -v "$qemu_img" >/dev/null 2>&1 || {
+  printf '%s\n' "create-base: qemu-img is required" >&2
+  exit 1
+}
+
+"$qemu_img" create -f qcow2 "$base" "$size"
+if command -v jq >/dev/null 2>&1; then
+  jq -n --arg base "$base" --arg size "$size" \
+    '{schema:1,base:$base,size:$size,read_only:false,persistent:false}' \
+    > "$output_dir/base-create.json"
+fi
+printf '%s\n' "base created: $base ($size)"

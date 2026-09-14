@@ -1,0 +1,59 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  printf '%s\n' "usage: prepare-opencore MACOS_VERSION [output-dir]" >&2
+  exit 2
+fi
+version=$1
+output_dir=${2:-out/hvf/opencore}
+case "$version" in
+  11|12|13|14) ;;
+  *)
+    printf '%s\n' "prepare-opencore: version must be 11, 12, 13, or 14" >&2
+    exit 2
+    ;;
+esac
+
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "prepare-opencore: jq is required" >&2
+  exit 1
+}
+repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+source_dir=${DISTILL_OPENCORE_DIR:-$repo_dir/assets/opencore/$version}
+test -d "$source_dir" || {
+  printf '%s\n' "prepare-opencore: OpenCore directory is unavailable: $source_dir" >&2
+  exit 1
+}
+config=$(find "$source_dir" -type f -name config.plist -print | sort | tail -n 1)
+[ -n "$config" ] || {
+  printf '%s\n' "prepare-opencore: config.plist is required" >&2
+  exit 1
+}
+if find "$source_dir" -type f \( -name '*.qcow2' -o -name '*.img' -o -name '*.raw' \) -print | grep -q .; then
+  printf '%s\n' "prepare-opencore: VM images are not accepted as OpenCore input" >&2
+  exit 1
+fi
+if find "$source_dir" -type l -print | grep -q . ||
+   find -L "$source_dir" -type f \( -name '*.qcow2' -o -name '*.img' -o -name '*.raw' \) -print | grep -q .; then
+  printf '%s\n' "prepare-opencore: symlinked or indirect VM images are not accepted" >&2
+  exit 1
+fi
+
+test ! -e "$output_dir" || {
+  printf '%s\n' "prepare-opencore: output already exists: $output_dir" >&2
+  exit 1
+}
+mkdir -p "$output_dir"
+cp -R "$source_dir"/. "$output_dir"/
+
+jq -n \
+  --arg version "$version" \
+  --arg source "$source_dir" \
+  --arg output "$output_dir" \
+  --arg config "$config" \
+  '{schema:1,version:$version,source:$source,output:$output,config:$config,vm_image:false}' \
+  > "$output_dir/opencore.json"
+printf '%s\n' "OpenCore: $output_dir"

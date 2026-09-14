@@ -1,0 +1,1221 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "fileutils"
+require "json"
+require "open3"
+require "optparse"
+require "rbconfig"
+require "tmpdir"
+require "uri"
+
+module BrewDistill
+  SCHEMA = 4
+
+  class Error < StandardError; end
+
+  module CommandOutput
+    module_function
+
+    def capture(*command)
+      stdout, _stderr, status = Open3.capture3(*command)
+      status.success? ? stdout.strip : ""
+    rescue Errno::ENOENT
+      ""
+    end
+  end
+
+  module CanonicalJSON
+    module_function
+
+    def normalize(value)
+      case value
+      when Hash
+        value.keys.map(&:to_s).sort.each_with_object({}) do |key, result|
+          source = value.key?(key) ? value[key] : value[key.to_sym]
+          result[key] = normalize(source)
+        end
+      when Array
+        value.map { |item| normalize(item) }
+      else
+        value
+      end
+    end
+
+    def dump(value)
+      JSON.generate(normalize(value))
+    end
+  end
+
+  class Formula
+    attr_reader :raw
+
+    def initialize(raw)
+      @raw = raw
+      raise Error, "formula metadata must be an object" unless raw.is_a?(Hash)
+      raise Error, "formula metadata has no name" if name.empty?
+      raise Error, "formula #{name} has no stable version" if version.empty?
+      raise Error, "formula #{name} has no formula SHA256" if formula_sha256.empty?
+      unless formula_sha256.match?(/\A[0-9a-f]{64}\z/i)
+        raise Error, "formula #{name} has an invalid formula SHA256"
+      end
+    end
+
+    def name
+      raw.fetch("name", "").to_s
+    end
+
+    def version
+      versions = raw["versions"]
+      value = versions.is_a?(Hash) ? versions["stable"] : nil
+      (value || raw["version"]).to_s
+    end
+
+    def revision
+      raw.fetch("revision", 0).to_i
+    end
+
+    def formula_sha256
+      checksum = raw["ruby_source_checksum"]
+      checksum = checksum["sha256"] if checksum.is_a?(Hash)
+      checksum = raw["formula_sha256"] if checksum.to_s.empty?
+      checksum.to_s.downcase
+    end
+
+    def dependencies
+      Array(raw["dependencies"]).each_with_object([]) do |dependency, result|
+        name = case dependency
+               when String
+                 dependency.split.first
+               when Hash
+                 dependency["name"] || dependency[:name]
+               end
+        result << name if name
+      end.uniq
+    end
+
+    def identity
+      {
+        "name" => name,
+        "version" => version,
+        "revision" => revision,
+        "formula_sha256" => formula_sha256
+      }
+    end
+
+    def official_bottle_available?(platform)
+      files = raw.dig("bottle", "stable", "files")
+      return false unless files.is_a?(Hash)
+
+      tag = platform["bottle_tag"]
+      candidates = ["#{platform["arch"]}_#{tag}", tag, platform["version"], "all"].compact.uniq
+      candidates.any? do |candidate|
+        files[candidate].is_a?(Hash) && files[candidate]["sha256"].to_s.match?(/\A[0-9a-f]{64}\z/i)
+      end
+    end
+  end
+
+  class Platform
+    TAGS = {
+      "11" => "big_sur",
+      "12" => "monterey",
+      "13" => "ventura",
+      "14" => "sonoma",
+      "15" => "sequoia",
+      "26" => "tahoe"
+    }.freeze
+
+    attr_reader :data
+
+    def initialize(data)
+      raise Error, "platform metadata must be an object" unless data.is_a?(Hash)
+
+      @data = data.transform_keys(&:to_s)
+    end
+
+    def self.detect
+      version = CommandOutput.capture("sw_vers", "-productVersion")
+      os = version.empty? ? RbConfig::CONFIG.fetch("host_os", "unknown") : "macos"
+      major = version.split(".").first.to_s
+      arch = CommandOutput.capture("uname", "-m")
+      arch = RbConfig::CONFIG.fetch("host_cpu", "unknown") if arch.empty?
+      new(
+        "os" => os,
+        "version" => major,
+        "arch" => arch,
+        "bottle_tag" => TAGS[major]
+      )
+    end
+
+  end
+
+  class Homebrew
+    def initialize(executable = ENV.fetch("BREW", "brew"))
+      @executable = executable
+    end
+
+    def available?
+      system({ "HOMEBREW_NO_AUTO_UPDATE" => "1" }, @executable, "--version", out: File::NULL, err: File::NULL)
+    rescue Errno::ENOENT
+      false
+    end
+
+    def info(name)
+      json = run("info", "--json=v2", "--formula", name)
+      data = JSON.parse(json)
+      raise Error, "Homebrew returned invalid formula metadata" unless data.is_a?(Hash)
+      formula = Array(data["formulae"]).find { |item| item.is_a?(Hash) && item["name"] == name }
+      raise Error, "Homebrew returned no formula metadata for #{name}" unless formula
+
+      formula
+    rescue JSON::ParserError => e
+      raise Error, "Homebrew returned invalid JSON: #{e.message}"
+    end
+
+    def installed_formulas
+      output = run("list", "--formula", "--versions")
+      output.each_line.each_with_object({}) do |line, result|
+        values = line.split
+        result[values.first] = values.last if values.length > 1
+      end
+    end
+
+    def verify_installed!(name, expected_version)
+      actual_version = installed_formulas[name]
+      return if actual_version.to_s == expected_version.to_s
+
+      raise Error, "Homebrew did not report #{name} #{expected_version} after install"
+    end
+
+    def install(argument, dry_run: false)
+      args = ["install", "--formula"]
+      args << "--dry-run" if dry_run
+      args << argument
+      ok = system({ "HOMEBREW_NO_AUTO_UPDATE" => "1" }, @executable, *args)
+      raise Error, "Homebrew install failed for #{argument}" unless ok
+    rescue Errno::ENOENT
+      raise Error, "Homebrew executable is unavailable: #{@executable}"
+    end
+
+    def search(query)
+      run("search", query)
+    end
+
+    def protect(name)
+      run("pin", name)
+    end
+
+    def unprotect(name)
+      run("unpin", name)
+    end
+
+    private
+
+    def run(*args)
+      env = { "HOMEBREW_NO_AUTO_UPDATE" => "1" }
+      stdout, stderr, status = Open3.capture3(env, @executable, *args)
+      return stdout if status.success?
+
+      detail = stderr.strip
+      detail = stdout.strip if detail.empty?
+      raise Error, "brew #{args.join(" ")} failed#{detail.empty? ? "" : ": #{detail}"}"
+    rescue Errno::ENOENT
+      raise Error, "Homebrew executable is unavailable: #{@executable}"
+    end
+  end
+
+  class FormulaProvider
+    def initialize(brew: Homebrew.new, data_path: nil)
+      @brew = brew
+      @data = data_path && load_data(data_path)
+      @cache = {}
+    end
+
+    def formula(name)
+      @cache[name] ||= Formula.new(@data ? lookup(name) : @brew.info(name))
+    end
+
+    private
+
+    def load_data(path)
+      JSON.parse(File.read(path))
+    rescue Errno::ENOENT, JSON::ParserError => e
+      raise Error, "cannot read formula data #{path}: #{e.message}"
+    end
+
+    def lookup(name)
+      formulae = if @data.is_a?(Hash) && @data["formulae"].is_a?(Array)
+                   @data["formulae"]
+                 elsif @data.is_a?(Array)
+                   @data
+                 elsif @data.is_a?(Hash) && @data["formulas"].is_a?(Hash)
+                   [@data["formulas"][name]]
+                 elsif @data.is_a?(Hash) && @data["name"]
+                   [@data]
+                 elsif @data.is_a?(Hash)
+                   [@data[name]]
+                 else
+                   []
+                 end
+      formula = formulae.compact.find { |item| item["name"] == name }
+      raise Error, "formula data has no formula #{name}" unless formula
+
+      formula
+    end
+  end
+
+  class Resolver
+    def initialize(provider)
+      @provider = provider
+      @state = {}
+      @ordered = []
+    end
+
+    def resolve(name)
+      @state.clear
+      @ordered.clear
+      visit(name, [])
+      @ordered
+    end
+
+    def dependency_fingerprint(formula)
+      dependencies = formula.dependencies.map { |name| @provider.formula(name) }
+      Fingerprints.dependencies(dependencies)
+    end
+
+    private
+
+    def visit(name, parents)
+      case @state[name]
+      when :done
+        return
+      when :visiting
+        cycle = (parents + [name]).join(" -> ")
+        raise Error, "dependency cycle: #{cycle}"
+      end
+
+      @state[name] = :visiting
+      formula = @provider.formula(name)
+      formula.dependencies.each { |dependency| visit(dependency, parents + [name]) }
+      @state[name] = :done
+      @ordered << formula
+    end
+  end
+
+  module Fingerprints
+    module_function
+
+    def dependencies(formulas)
+      values = formulas.map do |formula|
+        {
+          "name" => formula.name,
+          "version" => formula.version,
+          "revision" => formula.revision
+        }
+      end.sort_by { |value| [value["name"], value["version"], value["revision"]] }
+      Digest::SHA256.hexdigest(CanonicalJSON.dump("dependencies" => values))
+    end
+  end
+
+  module SecureURL
+    module_function
+
+    def validate!(url, label = "artifact")
+      uri = URI.parse(url.to_s)
+      unless uri.scheme == "https" && !uri.host.to_s.empty? && uri.userinfo.nil? && uri.fragment.nil?
+        raise Error, "#{label} URL must be an HTTPS URL without credentials or fragments"
+      end
+      url.to_s
+    rescue URI::InvalidURIError => e
+      raise Error, "invalid #{label} URL: #{e.message}"
+    end
+  end
+
+  class Registry
+    attr_reader :path
+
+    def initialize(path)
+      @path = File.expand_path(path)
+      @data = JSON.parse(File.read(@path))
+      validate_schema!
+      @entries = entries_from(@data)
+    rescue Errno::ENOENT, JSON::ParserError => e
+      raise Error, "cannot read registry #{@path}: #{e.message}"
+    end
+
+    def find(formula, platform, dependency_fingerprint: nil)
+      dependency_mismatch = false
+      @entries.each do |entry|
+        next unless identity_matches?(entry["formula"] || {}, formula.identity)
+        next unless platform_matches?(entry["platform"] || {}, platform.data)
+
+        recorded = entry.dig("dependencies", "fingerprint")
+        if recorded && dependency_fingerprint && recorded != dependency_fingerprint
+          dependency_mismatch = true
+          next
+        end
+        return entry
+      end
+      raise Error, "dependency fingerprint mismatch for #{formula.name}" if dependency_mismatch
+
+      nil
+    end
+
+    def artifact_path(entry, bottle_dir: nil)
+      artifact = entry["artifact"] || {}
+      relative_path = artifact["path"] || artifact["local_path"]
+      if relative_path.to_s.empty?
+        raise Error, "registry entry has no local artifact path"
+      end
+
+      root = File.expand_path(bottle_dir || File.dirname(path))
+      candidate = File.expand_path(relative_path, root)
+      ensure_inside!(candidate, root)
+      if File.exist?(candidate)
+        ensure_inside!(File.realpath(candidate), File.realpath(root))
+      end
+      candidate
+    end
+
+    def artifact_url(entry)
+      url = entry.dig("artifact", "url").to_s
+      raise Error, "registry entry has no artifact URL" if url.empty?
+
+      SecureURL.validate!(url, "registry artifact")
+    end
+
+    private
+
+    def entries_from(data)
+      entries = if data.is_a?(Hash) && data["bottles"].is_a?(Array)
+                  data["bottles"]
+                elsif data.is_a?(Hash) && data["entries"].is_a?(Array)
+                  data["entries"]
+                elsif data.is_a?(Hash) && data["formula"] && data["artifact"]
+                  [data]
+                else
+                  []
+                end
+      entries.each_with_index.map do |entry, index|
+        raise Error, "registry entry #{index} must be an object" unless entry.is_a?(Hash)
+        validate_entry!(entry, index)
+
+        entry
+      end
+    end
+
+    def validate_schema!
+      return if @data.is_a?(Hash) && @data["schema"].to_i == SCHEMA
+
+      raise Error, "unsupported registry schema: #{@data.is_a?(Hash) ? @data["schema"] : nil}"
+    end
+
+    def validate_entry!(entry, index)
+      formula = entry["formula"]
+      dependencies = entry["dependencies"]
+      artifact = entry["artifact"]
+      raise Error, "registry entry #{index} has no formula" unless formula.is_a?(Hash)
+      raise Error, "registry entry #{index} has no platform" unless entry["platform"].is_a?(Hash)
+      raise Error, "registry entry #{index} has no dependencies" unless dependencies.is_a?(Hash)
+      raise Error, "registry entry #{index} has no artifact" unless artifact.is_a?(Hash)
+      %w[name version revision].each do |key|
+        raise Error, "registry entry #{index} formula is missing #{key}" if formula[key].to_s.empty?
+      end
+      formula_sha = formula["formula_sha256"].to_s
+      formula_sha = formula["sha256"] if formula_sha.empty?
+      raise Error, "registry entry #{index} formula is missing formula_sha256" if formula_sha.to_s.empty?
+      if formula["formula_sha256"] && formula["sha256"] &&
+         !formula["formula_sha256"].to_s.casecmp?(formula["sha256"].to_s)
+        raise Error, "registry entry #{index} formula SHA256 fields disagree"
+      end
+      %w[os version arch].each do |key|
+        raise Error, "registry entry #{index} platform is missing #{key}" if entry["platform"][key].to_s.empty?
+      end
+      unless formula_sha.to_s.match?(/\A[0-9a-f]{64}\z/i)
+        raise Error, "registry entry #{index} formula has invalid sha256"
+      end
+      unless dependencies["fingerprint"].to_s.match?(/\A[0-9a-f]{64}\z/i)
+        raise Error, "registry entry #{index} dependencies have invalid fingerprint"
+      end
+      unless artifact["sha256"].to_s.match?(/\A[0-9a-f]{64}\z/i)
+        raise Error, "registry entry #{index} artifact has invalid sha256"
+      end
+      if artifact["path"].to_s.empty? && artifact["local_path"].to_s.empty? && artifact["url"].to_s.empty?
+        raise Error, "registry entry #{index} artifact has no path or URL"
+      end
+      artifact_url({ "artifact" => artifact }) unless artifact["url"].to_s.empty?
+    end
+
+    def identity_matches?(candidate, expected)
+      candidate_sha = candidate["formula_sha256"].to_s
+      candidate_sha = candidate["sha256"] if candidate_sha.empty?
+      %w[name version revision].all? do |key|
+        !candidate[key].to_s.empty? && candidate[key].to_s == expected[key].to_s
+      end && candidate_sha.to_s.casecmp?(expected["formula_sha256"].to_s)
+    end
+
+    def platform_matches?(candidate, expected)
+      candidate.all? { |key, value| expected[key.to_s].to_s == value.to_s }
+    end
+
+    def ensure_inside!(candidate, root)
+      root = File.expand_path(root)
+      prefix = root.end_with?(File::SEPARATOR) ? root : "#{root}#{File::SEPARATOR}"
+      return if candidate == root || candidate.start_with?(prefix)
+
+      raise Error, "artifact path escapes bottle directory: #{candidate}"
+    end
+  end
+
+  module ArtifactVerifier
+    module_function
+
+    def sha256(path)
+      raise Error, "artifact does not exist: #{path}" unless File.file?(path)
+
+      Digest::SHA256.file(path).hexdigest
+    end
+
+    def verify!(path, expected_sha256)
+      expected = expected_sha256.to_s.downcase
+      unless expected.match?(/\A[0-9a-f]{64}\z/)
+        raise Error, "invalid SHA256: #{expected_sha256}"
+      end
+
+      actual = sha256(path)
+      raise Error, "SHA256 mismatch for #{path}: expected #{expected}, got #{actual}" unless actual == expected
+
+      actual
+    end
+  end
+
+  module ArtifactFetcher
+    module_function
+
+    def download(url, expected_sha256, directory)
+      expected = expected_sha256.to_s.downcase
+      raise Error, "invalid SHA256: #{expected_sha256}" unless expected.match?(/\A[0-9a-f]{64}\z/)
+
+      SecureURL.validate!(url)
+      FileUtils.mkdir_p(directory)
+      output = File.join(directory, "artifact-#{expected}.bottle.tar.gz")
+      return output if File.file?(output) && ArtifactVerifier.sha256(output) == expected
+
+      curl = ENV.fetch("DISTILL_CURL", "curl")
+      _stdout, stderr, status = Open3.capture3(
+        curl, "--fail", "--location", "--proto", "=https", "--proto-redir", "=https",
+        "--retry", "3", "--connect-timeout", "20", "--max-time", "180", "--output", output, url
+      )
+      unless status.success?
+        detail = stderr.to_s.strip
+        raise Error, "artifact download failed#{detail.empty? ? "" : ": #{detail}"}"
+      end
+      ArtifactVerifier.verify!(output, expected)
+      output
+    rescue Errno::ENOENT
+      raise Error, "artifact downloader is unavailable: #{curl}"
+    end
+  end
+
+  module Toolchain
+    module_function
+
+    def detect
+      data = {
+        "xcode_version" => first_line(CommandOutput.capture("xcodebuild", "-version")),
+        "clang_version" => first_line(CommandOutput.capture("clang", "--version")),
+        "sdk_version" => ENV.fetch("DISTILL_SDK_VERSION", "").then do |value|
+          value.empty? ? CommandOutput.capture("xcrun", "--sdk", "macosx", "--show-sdk-version") : value
+        end,
+        "deployment_target" => ENV.fetch("MACOSX_DEPLOYMENT_TARGET", ""),
+        "macos_version" => CommandOutput.capture("sw_vers", "-productVersion"),
+        "macos_build" => CommandOutput.capture("sw_vers", "-buildVersion"),
+        "runner_image" => ENV.fetch("ImageVersion", ENV.fetch("RUNNER_IMAGE", "")),
+        "libcxx" => true
+      }
+      data["fingerprint"] = Digest::SHA256.hexdigest(CanonicalJSON.dump(data))
+      data
+    end
+
+    def from_file(path)
+      data = JSON.parse(File.read(path))
+      raise Error, "toolchain metadata must be an object" unless data.is_a?(Hash)
+
+      recorded = data["fingerprint"]
+      payload = data.reject { |key, _value| key.to_s == "fingerprint" }
+      fingerprint = Digest::SHA256.hexdigest(CanonicalJSON.dump(payload))
+      raise Error, "toolchain fingerprint mismatch" if recorded && recorded != fingerprint
+
+      data["fingerprint"] = fingerprint
+      data
+    rescue Errno::ENOENT, JSON::ParserError => e
+      raise Error, "cannot read toolchain JSON #{path}: #{e.message}"
+    end
+
+    def first_line(value)
+      value.to_s.lines.first.to_s.strip
+    end
+    private_class_method :first_line
+  end
+
+  module Manifest
+    module_function
+
+    def load(path)
+      data = JSON.parse(File.read(path))
+      validate!(data)
+      data
+    rescue Errno::ENOENT, JSON::ParserError => e
+      raise Error, "cannot read manifest #{path}: #{e.message}"
+    end
+
+    def validate!(data)
+      raise Error, "manifest must be an object" unless data.is_a?(Hash)
+      raise Error, "unsupported manifest schema: #{data["schema"]}" unless data["schema"].to_i == SCHEMA
+
+      %w[formula platform builder dependencies toolchain network artifact].each do |key|
+        raise Error, "manifest is missing #{key}" unless data[key].is_a?(Hash)
+      end
+      identity = data["formula"]
+      %w[name version revision].each do |key|
+        raise Error, "manifest formula is missing #{key}" if identity[key].to_s.empty?
+      end
+      formula_sha = identity["formula_sha256"].to_s
+      formula_sha = identity["sha256"] if formula_sha.empty?
+      raise Error, "manifest formula is missing formula_sha256" if formula_sha.to_s.empty?
+      dependency_sha = data.dig("dependencies", "fingerprint").to_s
+      raise Error, "manifest dependencies have invalid fingerprint" unless dependency_sha.match?(/\A[0-9a-f]{64}\z/i)
+      toolchain_sha = data.dig("toolchain", "fingerprint").to_s
+      raise Error, "manifest toolchain has invalid fingerprint" unless toolchain_sha.match?(/\A[0-9a-f]{64}\z/i)
+      raise Error, "manifest formula has invalid sha256" unless formula_sha.match?(/\A[0-9a-f]{64}\z/i)
+      if identity["formula_sha256"] && identity["sha256"] &&
+         !identity["formula_sha256"].to_s.casecmp?(identity["sha256"].to_s)
+        raise Error, "manifest formula SHA256 fields disagree"
+      end
+      %w[os version arch].each do |key|
+        raise Error, "manifest platform is missing #{key}" if data["platform"][key].to_s.empty?
+      end
+      artifact_sha = data.dig("artifact", "sha256").to_s
+      raise Error, "manifest artifact has invalid sha256" unless artifact_sha.match?(/\A[0-9a-f]{64}\z/i)
+      artifact = data["artifact"]
+      if artifact["path"].to_s.empty? && artifact["url"].to_s.empty?
+        raise Error, "manifest artifact has no path or URL"
+      end
+      SecureURL.validate!(artifact["url"], "manifest artifact") unless artifact["url"].to_s.empty?
+      data
+    end
+  end
+
+  class StateStore
+    DEFAULT_PATH = File.join(Dir.home, ".brew-distill", "state.json")
+
+    attr_reader :path
+
+    def initialize(path = nil)
+      path ||= ENV.fetch("DISTILL_STATE_PATH", DEFAULT_PATH)
+      @path = File.expand_path(path)
+      @formulae = load_state
+    end
+
+    def statuses(installed)
+      names = (@formulae.keys | installed.keys).sort
+      names.each_with_object({}) do |name, result|
+        saved = @formulae[name]
+        version = installed[name]
+        result[name] = if saved.nil?
+                         "external"
+                       elsif version.nil?
+                         "missing"
+                       elsif saved["version"].to_s == version.to_s
+                         "managed"
+                       else
+                         "drifted"
+                       end
+      end
+    end
+
+    def record(formula)
+      identity = formula.respond_to?(:identity) ? formula.identity : formula
+      @formulae[identity.fetch("name")] = identity
+    end
+
+    def reconcile!(installed)
+      result = statuses(installed)
+      missing = @formulae.keys.reject { |name| installed.key?(name) }
+      missing.each { |name| @formulae.delete(name) }
+      [result, !missing.empty?]
+    end
+
+    def save
+      FileUtils.mkdir_p(File.dirname(path))
+      temporary = "#{path}.tmp.#{$$}"
+      File.write(temporary, JSON.pretty_generate("schema" => 1, "formulae" => @formulae) + "\n")
+      File.rename(temporary, path)
+    rescue SystemCallError => e
+      raise Error, "cannot save state #{path}: #{e.message}"
+    end
+
+    private
+
+    def load_state
+      return {} unless File.file?(path)
+
+      data = JSON.parse(File.read(path))
+      raise Error, "state must be an object" unless data.is_a?(Hash)
+      raise Error, "unsupported state schema: #{data["schema"]}" unless data["schema"].to_i == 1
+      formulae = data["formulae"]
+      raise Error, "state formulae must be an object" unless formulae.is_a?(Hash)
+
+      formulae
+    rescue Errno::ENOENT
+      {}
+    rescue JSON::ParserError => e
+      raise Error, "cannot read state #{path}: #{e.message}"
+    end
+  end
+
+  class CLI
+    COMMANDS = %w[doctor fetch gc info install manifest protect reconcile request search unprotect upgrade verify help].freeze
+
+    def initialize(argv, out: $stdout, err: $stderr)
+      @argv = argv.dup
+      @out = out
+      @err = err
+    end
+
+    def run
+      command = @argv.first
+      if COMMANDS.include?(command)
+        @argv.shift
+      elsif %w[-h --help].include?(command)
+        @argv.shift
+        command = "help"
+      else
+        command = "install"
+      end
+      send("command_#{command}")
+    rescue Error => e
+      @err.puts "brew-distill: #{e.message}"
+      1
+    rescue OptionParser::ParseError => e
+      @err.puts "brew-distill: #{e.message}"
+      2
+    end
+
+    private
+
+    def command_help
+      @out.puts <<~TEXT
+        Usage: brew-distill <command> [options] [formula]
+
+        Commands:
+          install FORMULA   resolve dependencies and install one item at a time
+          upgrade FORMULA   refresh and install a formula through the same plan
+          fetch PATH        prefetch trusted source metadata into CAS
+          gc                report or remove unreferenced CAS objects
+          info FORMULA      print Homebrew identity and dependency metadata
+          search QUERY      delegate formula search to Homebrew
+          manifest FORMULA  create a schema 4 Bottle manifest
+          reconcile         compare advisory state with Homebrew's installed formulae
+          request FORMULA   create a build request from Homebrew metadata
+          protect FORMULA   delegate formula pinning to Homebrew
+          unprotect FORMULA delegate formula unpinning to Homebrew
+          verify PATH       verify a local bottle or manifest artifact
+          doctor            check the local Homebrew and platform boundary
+
+        A formula name without a command is shorthand for install FORMULA.
+      TEXT
+      0
+    end
+
+    def command_request
+      options = default_options.merge(output: nil)
+      parser = common_parser(options)
+      parser.on("--output PATH", "write the request JSON") { |value| options[:output] = value }
+      parsed = catch(:help) { parser.parse!(@argv); true }
+      return 0 unless parsed == true
+      name = require_formula(@argv)
+      provider = FormulaProvider.new(brew: Homebrew.new(options[:brew]), data_path: options[:formula_data])
+      formula = provider.formula(name)
+      resolver = Resolver.new(provider)
+      dependencies = formula.dependencies.map { |dependency| provider.formula(dependency) }
+      request = {
+        "schema" => 1,
+        "status" => "requested",
+        "formula" => formula.identity,
+        "platform" => selected_platform(options).data,
+        "dependencies" => {
+          "fingerprint" => resolver.dependency_fingerprint(formula),
+          "items" => dependencies.map { |dependency| dependency.identity.slice("name", "version", "revision") }
+        }
+      }
+      write_or_print(request, options[:output])
+      0
+    end
+
+    def command_protect
+      command_pin(:protect)
+    end
+
+    def command_unprotect
+      command_pin(:unprotect)
+    end
+
+    def command_pin(action)
+      options = default_options
+      return 0 unless parse_common(options, @argv)
+      name = require_formula(@argv)
+      brew = Homebrew.new(options[:brew])
+      action == :protect ? brew.protect(name) : brew.unprotect(name)
+      @out.puts "#{action}ed #{name}"
+      0
+    end
+
+    def command_gc
+      options = { cas: "cas", mapping: nil, apply: false, json: false }
+      parser = OptionParser.new do |o|
+        o.banner = "Usage: brew-distill gc [--cas PATH] [--mapping PATH] [--apply]"
+        o.on("--cas PATH", "CAS directory (default: cas)") { |value| options[:cas] = value }
+        o.on("--mapping PATH", "URL mapping JSON") { |value| options[:mapping] = value }
+        o.on("--apply", "delete unreferenced CAS objects") { options[:apply] = true }
+        o.on("--json", "print JSON") { options[:json] = true }
+        o.on("-h", "--help") { @out.puts o; throw :help, 0 }
+      end
+      parsed = catch(:help) { parser.parse!(@argv); true }
+      return 0 unless parsed == true
+      raise Error, "gc accepts no positional arguments" unless @argv.empty?
+
+      mapping_path = options[:mapping] || File.join(options[:cas], "urls.json")
+      if options[:apply] && !File.file?(mapping_path)
+        raise Error, "gc --apply requires a URL mapping"
+      end
+      references = gc_references(mapping_path)
+      cas_root = File.expand_path(options[:cas])
+      objects = Dir.glob(File.join(cas_root, "sha256", "[0-9a-f][0-9a-f]", "[0-9a-f][0-9a-f]", "*"))
+      candidates = objects.select do |object|
+        sha = File.basename(object)
+        first = File.basename(File.dirname(File.dirname(object)))
+        second = File.basename(File.dirname(object))
+        sha.match?(/\A[0-9a-f]{64}\z/) &&
+          sha.start_with?(first + second) &&
+          !references.include?(sha) && File.file?(object) && !File.symlink?(object)
+      end
+      deleted = []
+      if options[:apply]
+        candidates.each do |object|
+          File.delete(object)
+          deleted << object
+        end
+      end
+      result = { "schema" => 1, "cas" => cas_root, "referenced" => references.length,
+                 "candidates" => candidates, "deleted" => deleted }
+      options[:json] ? @out.puts(JSON.pretty_generate(result)) :
+        @out.puts("#{options[:apply] ? "deleted" : "unreferenced"} #{candidates.length} CAS object(s)")
+      0
+    end
+
+    def command_upgrade
+      command_install
+    end
+
+    def command_fetch
+      options = { metadata: nil, cas: "cas", mapping: nil }
+      parser = OptionParser.new do |o|
+        o.banner = "Usage: brew-distill fetch PATH [--cas PATH] [--mapping PATH]"
+        o.on("--metadata PATH", "trusted source metadata JSON") { |value| options[:metadata] = value }
+        o.on("--cas PATH", "CAS directory (default: cas)") { |value| options[:cas] = value }
+        o.on("--mapping PATH", "URL mapping JSON") { |value| options[:mapping] = value }
+        o.on("-h", "--help") { @out.puts o; throw :help, 0 }
+      end
+      parsed = catch(:help) { parser.parse!(@argv); true }
+      return 0 unless parsed == true
+      metadata = options[:metadata] || @argv.shift
+      raise Error, "fetch requires trusted metadata PATH" if metadata.to_s.empty?
+      raise Error, "unexpected arguments: #{@argv.join(" ")}" unless @argv.empty?
+
+      mapping = options[:mapping] || File.join(options[:cas], "urls.json")
+      script = File.expand_path("scripts/prefetch", __dir__)
+      ok = system(script, metadata, options[:cas], mapping)
+      raise Error, "source prefetch failed" unless ok
+
+      0
+    end
+
+    def command_search
+      options = default_options
+      return 0 unless parse_common(options, @argv)
+      query = @argv.shift
+      raise Error, "a search query is required" if query.to_s.empty?
+      raise Error, "unexpected arguments: #{@argv.join(" ")}" unless @argv.empty?
+      brew = Homebrew.new(options[:brew])
+      @out.write(brew.search(query))
+      0
+    end
+
+    def command_manifest
+      options = default_options.merge(
+        artifact: nil,
+        artifact_url: nil,
+        builder_json: nil,
+        toolchain_json: nil,
+        network_json: nil,
+        output: nil
+      )
+      parser = common_parser(options)
+      parser.on("--artifact PATH", "local Bottle to describe") { |value| options[:artifact] = value }
+      parser.on("--artifact-url URL", "published Bottle URL") { |value| options[:artifact_url] = value }
+      parser.on("--builder-json PATH", "builder metadata JSON") { |value| options[:builder_json] = value }
+      parser.on("--toolchain-json PATH", "toolchain metadata JSON") { |value| options[:toolchain_json] = value }
+      parser.on("--network-json PATH", "network metadata JSON") { |value| options[:network_json] = value }
+      parser.on("--output PATH", "write manifest to a file") { |value| options[:output] = value }
+      parsed = catch(:help) { parser.parse!(@argv); true }
+      return 0 unless parsed == true
+      raise Error, "manifest requires --artifact PATH" if options[:artifact].to_s.empty?
+
+      name = require_formula(@argv)
+      artifact_path = File.expand_path(options[:artifact])
+      provider = FormulaProvider.new(brew: Homebrew.new(options[:brew]), data_path: options[:formula_data])
+      formula = provider.formula(name)
+      resolver = Resolver.new(provider)
+      dependencies = formula.dependencies.map { |dependency| provider.formula(dependency) }
+      builder = options[:builder_json] ? read_object(options[:builder_json], "builder") : {
+        "provider" => ENV.fetch("DISTILL_BUILDER_PROVIDER", "github-hosted"),
+        "backend" => ENV.fetch("DISTILL_BUILDER_BACKEND", "native"),
+        "host_runner" => ENV.fetch("RUNNER_NAME", ""),
+        "guest_version" => ENV.fetch("DISTILL_GUEST_VERSION", "")
+      }
+      toolchain = options[:toolchain_json] ? Toolchain.from_file(options[:toolchain_json]) : Toolchain.detect
+      artifact_domain = !ENV.fetch("HOMEBREW_ARTIFACT_DOMAIN", "").empty?
+      fallback = ENV.fetch("HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK", "0") != "1"
+      network = options[:network_json] ? read_object(options[:network_json], "network") : {
+        "artifact_domain" => artifact_domain,
+        "homebrew_artifact_fallback" => fallback,
+        "fallback" => fallback,
+        "arbitrary_network_detected" => ENV.fetch("DISTILL_ARBITRARY_NETWORK_DETECTED", "0") == "1"
+      }
+      manifest = {
+        "schema" => SCHEMA,
+        "formula" => formula.identity.merge("sha256" => formula.formula_sha256),
+        "platform" => selected_platform(options).data,
+        "builder" => builder,
+        "dependencies" => {
+          "fingerprint" => resolver.dependency_fingerprint(formula),
+          "items" => dependencies.map { |dependency| dependency.identity.slice("name", "version", "revision") }
+        },
+        "toolchain" => toolchain,
+        "network" => network,
+        "artifact" => {
+          "sha256" => ArtifactVerifier.sha256(artifact_path),
+          "path" => File.basename(artifact_path)
+        }
+      }
+      manifest["artifact"]["url"] = options[:artifact_url] if options[:artifact_url]
+      Manifest.validate!(manifest)
+      serialized = JSON.pretty_generate(manifest)
+      if options[:output]
+        File.write(options[:output], "#{serialized}\n")
+      else
+        @out.puts serialized
+      end
+      0
+    end
+
+    def command_reconcile
+      options = default_options.merge(json: false)
+      parser = common_parser(options)
+      parser.on("--json", "print reconciliation as JSON") { options[:json] = true }
+      parsed = catch(:help) { parser.parse!(@argv); true }
+      return 0 unless parsed == true
+      raise Error, "reconcile accepts no positional arguments" unless @argv.empty?
+
+      brew = Homebrew.new(options[:brew])
+      state = StateStore.new(options[:state_path])
+      result = {
+        "state" => state.path,
+        "formulae" => nil
+      }
+      result["formulae"], changed = state.reconcile!(brew.installed_formulas)
+      state.save if changed
+      if options[:json]
+        @out.puts JSON.pretty_generate(result)
+      else
+        result["formulae"].each { |name, status| @out.puts "#{status.upcase.ljust(9)} #{name}" }
+      end
+      0
+    end
+
+    def command_doctor
+      options = { brew: "brew", registry: nil }
+      return 0 unless parse_common(options, @argv)
+      raise Error, "doctor accepts no positional arguments" unless @argv.empty?
+      brew = Homebrew.new(options[:brew])
+      raise Error, "Homebrew executable is unavailable: #{options[:brew]}" unless brew.available?
+
+      @out.puts "OK brew=#{options[:brew]}"
+      @out.puts "OK platform=#{JSON.generate(Platform.detect.data)}"
+      if options[:registry]
+        Registry.new(options[:registry])
+        @out.puts "OK registry=#{File.expand_path(options[:registry])}"
+      end
+      0
+    end
+
+    def command_info
+      options = default_options
+      return 0 unless parse_common(options, @argv)
+      name = require_formula(@argv)
+      provider = FormulaProvider.new(brew: Homebrew.new(options[:brew]), data_path: options[:formula_data])
+      formula = provider.formula(name)
+      resolver = Resolver.new(provider)
+      dependencies = formula.dependencies.map { |dependency| provider.formula(dependency) }
+      platform = selected_platform(options)
+      result = {
+        "formula" => formula.identity,
+        "dependencies" => dependencies.map(&:identity),
+        "dependency_fingerprint" => resolver.dependency_fingerprint(formula),
+        "platform" => platform.data,
+        "source" => formula.official_bottle_available?(platform.data) ? "official" : "unavailable"
+      }
+      if options[:registry]
+        entry = Registry.new(options[:registry]).find(
+          formula,
+          platform,
+          dependency_fingerprint: result["dependency_fingerprint"]
+        )
+        result["source"] = "distill" if entry
+        result["artifact"] = entry && entry["artifact"]
+      end
+      @out.puts JSON.pretty_generate(result)
+      0
+    end
+
+    def command_install
+      options = default_options.merge(dry_run: false, json: false)
+      parser = common_parser(options)
+      parser.on("--dry-run", "show the plan without installing") { options[:dry_run] = true }
+      parser.on("--json", "print the install plan as JSON") { options[:json] = true }
+      parsed = catch(:help) { parser.parse!(@argv); true }
+      return 0 unless parsed == true
+      name = require_formula(@argv)
+      provider = FormulaProvider.new(brew: Homebrew.new(options[:brew]), data_path: options[:formula_data])
+      resolver = Resolver.new(provider)
+      formulas = resolver.resolve(name)
+      platform = selected_platform(options)
+      registry = options[:registry] && Registry.new(options[:registry])
+      plan = formulas.map do |formula|
+        fingerprint = resolver.dependency_fingerprint(formula)
+        entry = registry&.find(formula, platform, dependency_fingerprint: fingerprint)
+        source = if entry
+                   "distill"
+                 elsif formula.official_bottle_available?(platform.data)
+                   "official"
+                 else
+                   "unavailable"
+                 end
+        { "formula" => formula, "entry" => entry, "fingerprint" => fingerprint, "source" => source }
+      end
+
+      plan_data = {
+        "schema" => SCHEMA,
+        "platform" => platform.data,
+        "items" => plan.map do |item|
+          {
+            "name" => item["formula"].name,
+            "version" => item["formula"].version,
+            "source" => item["source"],
+            "artifact" => item["entry"] && item["entry"]["artifact"]
+          }
+        end
+      }
+      if options[:json]
+        @out.puts JSON.pretty_generate(plan_data)
+      else
+        plan_data["items"].each do |item|
+          suffix = item["artifact"] ? " #{item["artifact"]["path"] || item["artifact"]["url"]}" : ""
+          @out.puts "#{item["source"].upcase.ljust(8)} #{item["name"]} #{item["version"]}#{suffix}"
+        end
+      end
+
+      return 0 if options[:dry_run]
+
+      unavailable = plan.select { |item| item["source"] == "unavailable" }.map { |item| item["formula"].name }
+      unless unavailable.empty?
+        raise Error, "no verified Distill or Homebrew Bottle for: #{unavailable.join(", ")}"
+      end
+
+      Dir.mktmpdir("brew-distill-install-") do |download_dir|
+        plan.each do |item|
+          next unless item["entry"]
+
+          artifact = item["entry"]["artifact"]
+          item["path"] = if artifact["path"].to_s.empty? && artifact["local_path"].to_s.empty?
+                           ArtifactFetcher.download(
+                             registry.artifact_url(item["entry"]), artifact["sha256"], download_dir
+                           )
+                         else
+                           registry.artifact_path(item["entry"], bottle_dir: options[:bottle_dir])
+                         end
+          ArtifactVerifier.verify!(item["path"], artifact["sha256"])
+        end
+
+        brew = Homebrew.new(options[:brew])
+        state = StateStore.new(options[:state_path])
+        _statuses, changed = state.reconcile!(brew.installed_formulas)
+        state.save if changed
+        plan.each do |item|
+          formula = item["formula"]
+          argument = item["entry"] ? item["path"] : formula.name
+          brew.install(argument)
+          brew.verify_installed!(formula.name, formula.version)
+          state.record(formula)
+          state.save
+        end
+      end
+      0
+    end
+
+    def command_verify
+      options = { sha256: nil }
+      parser = OptionParser.new do |o|
+        o.banner = "Usage: brew-distill verify PATH [--sha256 HASH]"
+        o.on("--sha256 HASH", "expected SHA256 for a bottle") { |value| options[:sha256] = value }
+        o.on("-h", "--help") { @out.puts o; throw :help, 0 }
+      end
+      parsed = catch(:help) { parser.parse!(@argv); true }
+      return 0 unless parsed == true
+      path = @argv.shift
+      raise Error, "verify requires a bottle or manifest path" unless path
+
+      manifest = path.end_with?(".manifest.json")
+      if !manifest && path.end_with?(".json")
+        begin
+          candidate = JSON.parse(File.read(path))
+          manifest = candidate.is_a?(Hash) && candidate["schema"].to_i == SCHEMA &&
+                     candidate["formula"].is_a?(Hash) && candidate["artifact"].is_a?(Hash)
+        rescue JSON::ParserError
+          manifest = false
+        end
+      end
+      if manifest
+        data = Manifest.load(path)
+        artifact = data.dig("artifact", "path")
+        options[:sha256] ||= data.dig("artifact", "sha256")
+        raise Error, "manifest has no local artifact path" if artifact.to_s.empty?
+
+        path = local_artifact_path(artifact, File.dirname(File.expand_path(path)))
+      end
+      raise Error, "verify requires --sha256 or a manifest artifact SHA256" unless options[:sha256]
+
+      actual = ArtifactVerifier.verify!(path, options[:sha256])
+      @out.puts "verified #{path} sha256=#{actual}"
+      0
+    rescue Errno::ENOENT, JSON::ParserError => e
+      raise Error, "cannot read manifest #{path}: #{e.message}"
+    end
+
+    def default_options
+      {
+        brew: "brew",
+        registry: nil,
+        bottle_dir: nil,
+        formula_data: nil,
+        platform_file: nil,
+        state_path: nil
+      }
+    end
+
+    def parse_common(options, argv)
+      catch(:help) { common_parser(options).parse!(argv); :parsed } == :parsed
+    end
+
+    def common_parser(options)
+      OptionParser.new do |o|
+        o.on("--brew PATH", "Homebrew executable (default: brew)") { |value| options[:brew] = value }
+        o.on("--registry PATH", "local registry JSON") { |value| options[:registry] = value }
+        o.on("--bottle-dir PATH", "directory containing local bottles") { |value| options[:bottle_dir] = value }
+        o.on("--formula-data PATH", "offline Homebrew JSON metadata") { |value| options[:formula_data] = value }
+        o.on("--platform-json PATH", "platform JSON for deterministic runs") { |value| options[:platform_file] = value }
+        o.on("--state PATH", "advisory state JSON") { |value| options[:state_path] = value }
+        o.on("-h", "--help") { @out.puts o; throw :help, 0 }
+      end
+    end
+
+    def selected_platform(options)
+      return Platform.detect unless options[:platform_file]
+
+      Platform.new(JSON.parse(File.read(options[:platform_file])))
+    rescue Errno::ENOENT, JSON::ParserError => e
+      raise Error, "cannot read platform JSON #{options[:platform_file]}: #{e.message}"
+    end
+
+    def read_object(path, label)
+      data = JSON.parse(File.read(path))
+      raise Error, "#{label} metadata must be an object" unless data.is_a?(Hash)
+
+      data
+    rescue Errno::ENOENT, JSON::ParserError => e
+      raise Error, "cannot read #{label} JSON #{path}: #{e.message}"
+    end
+
+    def write_or_print(data, path)
+      serialized = JSON.pretty_generate(data)
+      if path
+        FileUtils.mkdir_p(File.dirname(File.expand_path(path)))
+        File.write(path, "#{serialized}\n")
+      else
+        @out.puts serialized
+      end
+    end
+
+    def gc_references(path)
+      return [] unless File.file?(path)
+
+      data = JSON.parse(File.read(path))
+      raise Error, "GC mapping must be an object" unless data.is_a?(Hash)
+
+      data.values.map { |value| value.is_a?(Hash) ? value["sha256"] : value }.each_with_object([]) do |sha, result|
+        unless sha.to_s.match?(/\A[0-9a-f]{64}\z/i)
+          raise Error, "GC mapping contains an invalid SHA256"
+        end
+        result << sha.to_s.downcase
+      end.uniq
+    rescue Errno::ENOENT, JSON::ParserError => e
+      raise Error, "cannot read GC mapping #{path}: #{e.message}"
+    end
+
+    def local_artifact_path(relative_path, root)
+      if relative_path.to_s.match?(/\A[a-z][a-z0-9+.-]*:\/\//i)
+        raise Error, "remote artifact URLs are not accepted by verify"
+      end
+      root = File.realpath(root)
+      candidate = File.expand_path(relative_path, root)
+      prefix = "#{root}#{File::SEPARATOR}"
+      unless candidate == root || candidate.start_with?(prefix)
+        raise Error, "artifact path escapes manifest directory: #{candidate}"
+      end
+      if File.exist?(candidate)
+        resolved = File.realpath(candidate)
+        unless resolved == root || resolved.start_with?(prefix)
+          raise Error, "artifact path escapes manifest directory: #{resolved}"
+        end
+      end
+      candidate
+    end
+
+    def require_formula(argv)
+      name = argv.shift
+      raise Error, "a formula name is required" if name.to_s.empty?
+      unless name.match?(/\A[A-Za-z0-9@+._\/-]+\z/) && !name.start_with?("-")
+        raise Error, "unsafe formula name: #{name}"
+      end
+      raise Error, "unexpected arguments: #{argv.join(" ")}" unless argv.empty?
+
+      name
+    end
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  exit(BrewDistill::CLI.new(ARGV).run)
+end
