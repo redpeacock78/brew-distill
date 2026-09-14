@@ -16,6 +16,14 @@ case "$version" in
     exit 2
     ;;
 esac
+strict=${DISTILL_OPENCORE_STRICT:-0}
+case "$strict" in
+  0|1) ;;
+  *)
+    printf '%s\n' "prepare-opencore: DISTILL_OPENCORE_STRICT must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
 
 command -v jq >/dev/null 2>&1 || {
   printf '%s\n' "prepare-opencore: jq is required" >&2
@@ -41,6 +49,26 @@ if find "$source_dir" -type l -print | grep -q . ||
   printf '%s\n' "prepare-opencore: symlinked or indirect VM images are not accepted" >&2
   exit 1
 fi
+boot_files='EFI/BOOT/BOOTx64.efi
+EFI/OC/OpenCore.efi'
+if [ "$strict" = "1" ]; then
+  command -v plutil >/dev/null 2>&1 || {
+    printf '%s\n' "prepare-opencore: plutil is required in strict mode" >&2
+    exit 1
+  }
+  plutil -lint "$config" >/dev/null || {
+    printf '%s\n' "prepare-opencore: invalid config.plist: $config" >&2
+    exit 1
+  }
+  while IFS= read -r boot_file; do
+    [ -f "$source_dir/$boot_file" ] || {
+      printf '%s\n' "prepare-opencore: required OpenCore boot file is missing: $source_dir/$boot_file" >&2
+      exit 1
+    }
+  done <<EOF
+$boot_files
+EOF
+fi
 
 test ! -e "$output_dir" || {
   printf '%s\n' "prepare-opencore: output already exists: $output_dir" >&2
@@ -49,11 +77,15 @@ test ! -e "$output_dir" || {
 mkdir -p "$output_dir"
 cp -R "$source_dir"/. "$output_dir"/
 
+boot_files_json=$(printf '%s\n' "$boot_files" | jq -R -s 'split("\n") | map(select(length > 0))')
+
 jq -n \
   --arg version "$version" \
   --arg source "$source_dir" \
   --arg output "$output_dir" \
   --arg config "$config" \
-  '{schema:1,version:$version,source:$source,output:$output,config:$config,vm_image:false}' \
+  --argjson strict "$strict" \
+  --argjson boot_files "$boot_files_json" \
+  '{schema:1,version:$version,source:$source,output:$output,config:$config,strict:($strict == 1),boot_files:$boot_files,vm_image:false}' \
   > "$output_dir/opencore.json"
 printf '%s\n' "OpenCore: $output_dir"

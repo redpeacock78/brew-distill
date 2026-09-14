@@ -36,13 +36,29 @@ command -v "$softwareupdate_cmd" >/dev/null 2>&1 || {
   printf '%s\n' "fetch-installer: softwareupdate is required" >&2
   exit 1
 }
+plutil_cmd=${DISTILL_PLUTIL:-plutil}
+command -v "$plutil_cmd" >/dev/null 2>&1 || {
+  printf '%s\n' "fetch-installer: plutil is required to verify the installer version" >&2
+  exit 1
+}
 
 mkdir -p "$output_dir"
 "$softwareupdate_cmd" --fetch-full-installer --full-installer-version "$version"
 installer_root=${DISTILL_INSTALLER_ROOT:-/Applications}
-installer=$(find "$installer_root" -maxdepth 1 -type d -name 'Install macOS *.app' -print | sort | tail -n 1)
+installer=
+while IFS= read -r candidate; do
+  candidate_version=$(
+    "$plutil_cmd" -extract CFBundleShortVersionString raw -o - \
+      "$candidate/Contents/Info.plist" 2>/dev/null || true
+  )
+  if [ "$candidate_version" = "$version" ]; then
+    installer=$candidate
+  fi
+done <<EOF
+$(find "$installer_root" -maxdepth 1 -type d -name 'Install macOS *.app' -print | sort)
+EOF
 [ -n "$installer" ] || {
-  printf '%s\n' "fetch-installer: no Install macOS app found in $installer_root" >&2
+  printf '%s\n' "fetch-installer: no Install macOS app with version $version found in $installer_root" >&2
   exit 1
 }
 test -x "$installer/Contents/Resources/startosinstall" || {
@@ -53,6 +69,6 @@ test -x "$installer/Contents/Resources/startosinstall" || {
 jq -n \
   --arg version "$version" \
   --arg installer "$installer" \
-  '{schema:1,version:$version,installer:$installer}' \
+  '{schema:1,version:$version,bundle_version:$version,installer:$installer}' \
   > "$output_dir/installer.json"
 printf '%s\n' "installer=$installer"

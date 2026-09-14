@@ -36,6 +36,15 @@ installer_version=${DISTILL_INSTALLER_VERSION:-$macos_version}
 major=${macos_version%%.*}
 bootstrap=${DISTILL_LEGACY_BOOTSTRAP:-}
 diagnostics_archive=${DISTILL_DIAGNOSTICS_ARCHIVE:-}
+create_opencore_disk=${DISTILL_CREATE_OPENCORE_DISK:-0}
+
+case "$create_opencore_disk" in
+  0|1) ;;
+  *)
+    printf '%s\n' "legacy-poc: DISTILL_CREATE_OPENCORE_DISK must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
 
 mkdir -p "$hvf_dir" "$artifact_dir"
 finish() {
@@ -53,7 +62,23 @@ else
   "$repo_dir/scripts/hvf/reclaim-disk" "$hvf_dir" report
 fi
 "$repo_dir/scripts/hvf/fetch-installer" "$installer_version" "$hvf_dir"
+installer=$(jq -r '.installer // empty' "$hvf_dir/installer.json")
+test -n "$installer" || {
+  printf '%s\n' "legacy-poc: installer metadata has no installer path" >&2
+  exit 1
+}
+"$repo_dir/scripts/hvf/installer-capabilities" "$installer" "$hvf_dir"
 "$repo_dir/scripts/hvf/prepare-opencore" "$major" "$hvf_dir/opencore"
+opencore_disk=${DISTILL_OPENCORE_DISK:-$hvf_dir/opencore.img}
+if [ "$create_opencore_disk" = "1" ]; then
+  "$repo_dir/scripts/hvf/create-opencore-disk" "$hvf_dir/opencore" "$opencore_disk"
+fi
+if [ -n "${DISTILL_OPENCORE_DISK:-}" ] || [ "$create_opencore_disk" = "1" ]; then
+  test -f "$opencore_disk" || {
+    printf '%s\n' "legacy-poc: OpenCore disk does not exist: $opencore_disk" >&2
+    exit 1
+  }
+fi
 "$repo_dir/scripts/hvf/create-base" "$base" "${DISTILL_BASE_SIZE:-64G}" "$hvf_dir"
 
 test -n "$bootstrap" || {
@@ -68,14 +93,11 @@ if [ ! -x "$bootstrap" ]; then
   }
   bootstrap=$bootstrap_path
 fi
-installer=$(jq -r '.installer // empty' "$hvf_dir/installer.json")
-test -n "$installer" || {
-  printf '%s\n' "legacy-poc: installer metadata has no installer path" >&2
-  exit 1
-}
-
 # The hook runs the macOS guest bootstrap and Homebrew setup. It must return
 # with an installed guest in BASE.qcow2; startosinstall is never run here.
+if [ -f "$opencore_disk" ]; then
+  export DISTILL_OPENCORE_DISK="$opencore_disk"
+fi
 "$bootstrap" "$installer" "$base" "$hvf_dir/opencore" "$hvf_dir"
 test -f "$base" || {
   printf '%s\n' "legacy-poc: bootstrap hook did not return a base image" >&2
@@ -87,9 +109,9 @@ cas_dir=${DISTILL_CAS_DIR:-$output_dir/cas}
 mapping=${DISTILL_CAS_MAPPING:-$cas_dir/urls.json}
 "$repo_dir/scripts/prefetch-batch" "$batch" "$cas_dir" "$mapping"
 DISTILL_BASE_IMAGE="$base" \
-DISTILL_ARTIFACT_DIR="$artifact_dir" \
-DISTILL_OVERLAY_DIR="${DISTILL_OVERLAY_DIR:-$artifact_dir/overlays}" \
-DISTILL_GUEST_BUILD="${DISTILL_GUEST_BUILD:-$repo_dir/scripts/hvf/build-formula}" \
-  "$repo_dir/scripts/hvf/build-batch" "$batch"
+  DISTILL_ARTIFACT_DIR="$artifact_dir" \
+  DISTILL_OVERLAY_DIR="${DISTILL_OVERLAY_DIR:-$artifact_dir/overlays}" \
+  DISTILL_GUEST_BUILD="${DISTILL_GUEST_BUILD:-$repo_dir/scripts/hvf/build-formula}" \
+    "$repo_dir/scripts/hvf/build-batch" "$batch"
 
 printf '%s\n' "legacy PoC complete: $output_dir"

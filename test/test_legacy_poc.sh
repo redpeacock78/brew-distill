@@ -10,8 +10,23 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-mkdir -p "$test_dir/bin" "$test_dir/opencore/EFI/OC" "$test_dir/Applications" "$test_dir/output"
-printf '%s\n' config > "$test_dir/opencore/EFI/OC/config.plist"
+mkdir -p "$test_dir/bin" "$test_dir/opencore/EFI/BOOT" "$test_dir/opencore/EFI/OC" \
+  "$test_dir/Applications" "$test_dir/output"
+cat > "$test_dir/opencore/EFI/OC/config.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict/></plist>
+PLIST
+printf '%s\n' boot > "$test_dir/opencore/EFI/BOOT/BOOTx64.efi"
+printf '%s\n' opencore > "$test_dir/opencore/EFI/OC/OpenCore.efi"
+mkdir -p "$test_dir/Applications/Install macOS Sonoma.app/Contents/Resources"
+cat > "$test_dir/Applications/Install macOS Sonoma.app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>14.0.0</string></dict></plist>
+PLIST
+printf '%s\n' wrong-version > "$test_dir/Applications/Install macOS Sonoma.app/Contents/Resources/startosinstall"
+chmod 755 "$test_dir/Applications/Install macOS Sonoma.app/Contents/Resources/startosinstall"
 cat > "$test_dir/bin/qemu-system-x86_64" <<'EOF'
 #!/bin/sh
 set -eu
@@ -43,8 +58,17 @@ cat > "$test_dir/bin/softwareupdate" <<'EOF'
 #!/bin/sh
 set -eu
 mkdir -p "$DISTILL_INSTALLER_ROOT/Install macOS Ventura.app/Contents/Resources"
+cat > "$DISTILL_INSTALLER_ROOT/Install macOS Ventura.app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>13.6.1</string></dict></plist>
+PLIST
 cat > "$DISTILL_INSTALLER_ROOT/Install macOS Ventura.app/Contents/Resources/startosinstall" <<'INNER'
 #!/bin/sh
+if [ "${1:-}" = "--usage" ]; then
+  printf '%s\n' --agreetolicense --nointeraction --eraseinstall --volume
+  exit 0
+fi
 exit 0
 INNER
 chmod 755 "$DISTILL_INSTALLER_ROOT/Install macOS Ventura.app/Contents/Resources/startosinstall"
@@ -80,6 +104,7 @@ QEMU_IMG="$test_dir/bin/qemu-img" \
 DISTILL_SOFTWAREUPDATE="$test_dir/bin/softwareupdate" \
 DISTILL_INSTALLER_ROOT="$test_dir/Applications" \
 DISTILL_OPENCORE_DIR="$test_dir/opencore" \
+DISTILL_OPENCORE_STRICT=1 DISTILL_CREATE_OPENCORE_DISK=1 \
 DISTILL_INSTALLER_VERSION=13.6.1 \
 DISTILL_LEGACY_OUTPUT_DIR="$test_dir/output" \
 DISTILL_MIN_FREE_GIB=0 DISTILL_DISK_CANDIDATES='' \
@@ -90,6 +115,11 @@ DISTILL_REQUIRE_ARTIFACT=1 \
 
 test -s "$test_dir/output/artifacts/csound--1.0.ventura.bottle.tar.gz"
 jq -e '.qemu.hvf == true' "$test_dir/output/hvf/host-info.json" >/dev/null
+jq -e '.version == "13.6.1" and .bundle_version == "13.6.1" and (.installer | endswith("Install macOS Ventura.app"))' \
+  "$test_dir/output/hvf/installer.json" >/dev/null
+jq -e '.usage_status == 0' "$test_dir/output/hvf/installer-capabilities.json" >/dev/null
+test -s "$test_dir/output/hvf/startosinstall-usage.txt"
+test -s "$test_dir/output/hvf/opencore-disk.json"
 jq -e '.csound.status == "PASS"' \
   "$test_dir/output/artifacts/batch-results.json" >/dev/null
 test -s "$test_dir/output/diagnostics.json"

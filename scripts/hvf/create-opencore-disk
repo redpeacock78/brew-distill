@@ -1,0 +1,96 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -ne 2 ]; then
+  printf '%s\n' "usage: create-opencore-disk OPENCORE-DIR OUTPUT.img" >&2
+  exit 2
+fi
+
+source_dir=$1
+output_arg=$2
+if [ "$(uname -s)" != "Darwin" ]; then
+  printf '%s\n' "create-opencore-disk: hdiutil is required on macOS" >&2
+  exit 1
+fi
+test -d "$source_dir" || {
+  printf '%s\n' "create-opencore-disk: OpenCore directory does not exist: $source_dir" >&2
+  exit 1
+}
+test -d "$source_dir/EFI" || {
+  printf '%s\n' "create-opencore-disk: EFI directory is required: $source_dir/EFI" >&2
+  exit 1
+}
+test -e "$source_dir/EFI/BOOT/BOOTx64.efi" || {
+  printf '%s\n' "create-opencore-disk: EFI/BOOT/BOOTx64.efi is required" >&2
+  exit 1
+}
+test -e "$source_dir/EFI/OC/OpenCore.efi" || {
+  printf '%s\n' "create-opencore-disk: EFI/OC/OpenCore.efi is required" >&2
+  exit 1
+}
+for tool in hdiutil jq shasum; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    printf '%s\n' "create-opencore-disk: required tool is unavailable: $tool" >&2
+    exit 1
+  }
+done
+if find "$source_dir" -type l -print | grep -q .; then
+  printf '%s\n' "create-opencore-disk: symlinked OpenCore input is not accepted" >&2
+  exit 1
+fi
+
+output_dir=$(dirname -- "$output_arg")
+output_name=$(basename -- "$output_arg")
+mkdir -p "$output_dir"
+output_dir=$(cd -- "$output_dir" && pwd)
+output="$output_dir/$output_name"
+test ! -e "$output" || {
+  printf '%s\n' "create-opencore-disk: output already exists: $output" >&2
+  exit 1
+}
+
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-opencore.XXXXXX")
+mount_dir="$work_dir/mount"
+work_image="$work_dir/opencore.dmg"
+mkdir -p "$mount_dir"
+attached=
+cleanup() {
+  if [ -n "$attached" ]; then
+    hdiutil detach "$attached" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$work_dir"
+}
+trap cleanup EXIT HUP INT TERM
+
+hdiutil create -size "${DISTILL_OPENCORE_DISK_SIZE:-384m}" \
+  -fs 'MS-DOS FAT32' -layout GPTSPUD -volname OPENCORE -ov "$work_image" >/dev/null
+attach_output=$(hdiutil attach -nobrowse -noautoopen -mountpoint "$mount_dir" "$work_image")
+attached=$(printf '%s\n' "$attach_output" | awk 'NR == 1 {print $1}')
+test -n "$attached" || {
+  printf '%s\n' "create-opencore-disk: hdiutil did not report an attached device" >&2
+  exit 1
+}
+cp -R "$source_dir/EFI" "$mount_dir/"
+sync
+hdiutil detach "$attached" >/dev/null
+attached=
+
+hdiutil convert "$work_image" -format UDRW -o "$output" >/dev/null
+if [ ! -f "$output" ] && [ -f "$output.dmg" ]; then
+  mv "$output.dmg" "$output"
+fi
+test -s "$output" || {
+  printf '%s\n' "create-opencore-disk: hdiutil did not create output: $output" >&2
+  exit 1
+}
+
+sha256=$(shasum -a 256 "$output" | awk '{print $1}')
+jq -n \
+  --arg source "$source_dir" \
+  --arg output "$output" \
+  --arg sha256 "$sha256" \
+  '{schema:1,source:$source,output:$output,sha256:$sha256,format:"UDRW",vm_image:false}' \
+  > "$output_dir/opencore-disk.json"
+printf '%s\n' "OpenCore disk: $output"

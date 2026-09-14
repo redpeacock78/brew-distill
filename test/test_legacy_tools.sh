@@ -23,12 +23,24 @@ test ! -e "$test_dir/reclaim-me"
 jq -e '.mode == "apply" and .paths == ["'"$test_dir"'/reclaim-me"]' \
   "$test_dir/out/reclaim.json" >/dev/null
 
-mkdir -p "$test_dir/opencore-src/EFI/OC"
-printf '%s\n' config > "$test_dir/opencore-src/EFI/OC/config.plist"
-DISTILL_OPENCORE_DIR="$test_dir/opencore-src" \
+mkdir -p "$test_dir/opencore-src/EFI/BOOT" "$test_dir/opencore-src/EFI/OC"
+cat > "$test_dir/opencore-src/EFI/OC/config.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>ACPI</key><dict/></dict></plist>
+PLIST
+printf '%s\n' boot > "$test_dir/opencore-src/EFI/BOOT/BOOTx64.efi"
+printf '%s\n' opencore > "$test_dir/opencore-src/EFI/OC/OpenCore.efi"
+DISTILL_OPENCORE_DIR="$test_dir/opencore-src" DISTILL_OPENCORE_STRICT=1 \
   "$repo_dir/scripts/hvf/prepare-opencore" 13 "$test_dir/opencore" >/dev/null
 test -s "$test_dir/opencore/EFI/OC/config.plist"
-jq -e '.version == "13" and .vm_image == false' "$test_dir/opencore/opencore.json" >/dev/null
+jq -e '.version == "13" and .strict == true and (.boot_files | length) == 2 and .vm_image == false' \
+  "$test_dir/opencore/opencore.json" >/dev/null
+"$repo_dir/scripts/hvf/create-opencore-disk" "$test_dir/opencore" \
+  "$test_dir/opencore.img" >/dev/null
+test -s "$test_dir/opencore.img"
+jq -e '.format == "UDRW" and .vm_image == false and (.sha256 | length) == 64' \
+  "$test_dir/opencore-disk.json" >/dev/null
 
 cat > "$test_dir/fake-ssh" <<'EOF'
 #!/bin/sh
@@ -78,6 +90,12 @@ DISTILL_ALLOW_NON_DARWIN=1 QEMU_SYSTEM_X86_64="$test_dir/fake-qemu" \
   "$test_dir/boot-overlay.qcow2" "$test_dir/out" >/dev/null
 grep -F -- '-accel hvf' "$test_dir/qemu.log" >/dev/null
 grep -F -- "$test_dir/boot-overlay.qcow2" "$test_dir/qemu.log" >/dev/null
+printf '%s\n' opencore > "$test_dir/opencore.img"
+DISTILL_ALLOW_NON_DARWIN=1 DISTILL_OPENCORE_DISK="$test_dir/opencore.img" \
+  QEMU_SYSTEM_X86_64="$test_dir/fake-qemu" QEMU_LOG="$test_dir/qemu.log" \
+  "$repo_dir/scripts/hvf/boot-guest" "$test_dir/boot-overlay.qcow2" "$test_dir/out" >/dev/null
+grep -F -- "$test_dir/opencore.img" "$test_dir/qemu.log" >/dev/null
+grep -F -- 'OpenCoreBoot' "$test_dir/qemu.log" >/dev/null
 
 cat > "$test_dir/verifier" <<'EOF'
 #!/bin/sh

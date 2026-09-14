@@ -1,0 +1,103 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -gt 1 ]; then
+  printf '%s\n' "usage: provision-ssh [output-dir]" >&2
+  exit 2
+fi
+if [ "${DISTILL_GUEST:-0}" != "1" ]; then
+  printf '%s\n' "provision-ssh: set DISTILL_GUEST=1 inside the macOS guest" >&2
+  exit 1
+fi
+if [ "$(uname -s)" != "Darwin" ]; then
+  printf '%s\n' "provision-ssh: SSH provisioning must run in macOS" >&2
+  exit 1
+fi
+if [ "$(id -u)" -ne 0 ]; then
+  printf '%s\n' "provision-ssh: root is required to enable Remote Login" >&2
+  exit 1
+fi
+
+user=${DISTILL_GUEST_SSH_USER:-distill}
+key_file=${DISTILL_GUEST_SSH_PUBLIC_KEY_FILE:-}
+key_text=${DISTILL_GUEST_SSH_PUBLIC_KEY:-}
+output_dir=${1:-out/hvf}
+
+case "$user" in
+  ''|*[!A-Za-z0-9._-]*)
+    printf '%s\n' "provision-ssh: invalid guest user: $user" >&2
+    exit 2
+    ;;
+esac
+
+for tool in dscl id install jq ssh-keygen systemsetup; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    printf '%s\n' "provision-ssh: required tool is unavailable: $tool" >&2
+    exit 1
+  }
+done
+
+if ! id "$user" >/dev/null 2>&1; then
+  printf '%s\n' "provision-ssh: guest user does not exist: $user" >&2
+  exit 1
+fi
+if [ -n "$key_file" ] && [ -n "$key_text" ]; then
+  printf '%s\n' "provision-ssh: provide a key file or key text, not both" >&2
+  exit 2
+fi
+
+temporary_key=
+if [ -n "$key_file" ]; then
+  test -f "$key_file" || {
+    printf '%s\n' "provision-ssh: public key file does not exist: $key_file" >&2
+    exit 1
+  }
+elif [ -n "$key_text" ]; then
+  temporary_key=$(mktemp "${TMPDIR:-/tmp}/brew-distill-ssh-key.XXXXXX")
+  trap 'rm -f "$temporary_key"' EXIT HUP INT TERM
+  printf '%s\n' "$key_text" > "$temporary_key"
+  key_file=$temporary_key
+else
+  printf '%s\n' "provision-ssh: DISTILL_GUEST_SSH_PUBLIC_KEY_FILE or _PUBLIC_KEY is required" >&2
+  exit 1
+fi
+
+if grep -Eq 'BEGIN (OPENSSH|RSA|EC|DSA) PRIVATE KEY' "$key_file"; then
+  printf '%s\n' "provision-ssh: private keys are not accepted" >&2
+  exit 2
+fi
+fingerprint=$(ssh-keygen -lf "$key_file" 2>/dev/null | awk 'NR == 1 {print $2}')
+[ -n "$fingerprint" ] || {
+  printf '%s\n' "provision-ssh: invalid public key" >&2
+  exit 2
+}
+
+home=$(dscl . -read "/Users/$user" NFSHomeDirectory | awk 'NR == 1 {print $2}')
+[ -n "$home" ] || {
+  printf '%s\n' "provision-ssh: cannot resolve home directory for $user" >&2
+  exit 1
+}
+case "$home" in
+  /|/private|/private/var|*/*/../*)
+    printf '%s\n' "provision-ssh: unsafe home directory: $home" >&2
+    exit 2
+    ;;
+esac
+group=$(id -gn "$user")
+authorized_keys="$home/.ssh/authorized_keys"
+install -d -m 700 -o "$user" -g "$group" "$home/.ssh"
+printf '%s\n' "$(awk 'NF {print; exit}' "$key_file")" > "$authorized_keys"
+chown "$user:$group" "$authorized_keys"
+chmod 600 "$authorized_keys"
+
+systemsetup -setremotelogin on >/dev/null
+mkdir -p "$output_dir"
+jq -n \
+  --arg user "$user" \
+  --arg home "$home" \
+  --arg fingerprint "$fingerprint" \
+  '{schema:1,user:$user,home:$home,remote_login:true,public_key_fingerprint:$fingerprint}' \
+  > "$output_dir/ssh-ready.json"
+printf '%s\n' "SSH ready: $user"

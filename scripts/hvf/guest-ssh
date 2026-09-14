@@ -1,0 +1,140 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -lt 1 ]; then
+  printf '%s\n' "usage: guest-ssh ssh TARGET PORT [COMMAND ...] | scp PORT [SOURCE ...]" >&2
+  exit 2
+fi
+
+mode=$1
+shift
+identity=${DISTILL_GUEST_SSH_IDENTITY:-}
+known_hosts=${DISTILL_GUEST_KNOWN_HOSTS:-}
+require_identity=${DISTILL_REQUIRE_GUEST_SSH_IDENTITY:-0}
+connect_timeout=${DISTILL_GUEST_SSH_CONNECT_TIMEOUT:-600}
+
+case "$require_identity" in
+  0|1) ;;
+  *)
+    printf '%s\n' "guest-ssh: DISTILL_REQUIRE_GUEST_SSH_IDENTITY must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
+
+if [ -n "$identity" ]; then
+  test -f "$identity" || {
+    printf '%s\n' "guest-ssh: SSH identity does not exist: $identity" >&2
+    exit 1
+  }
+  test -r "$identity" || {
+    printf '%s\n' "guest-ssh: SSH identity is not readable: $identity" >&2
+    exit 1
+  }
+elif [ "$require_identity" = "1" ]; then
+  printf '%s\n' "guest-ssh: DISTILL_GUEST_SSH_IDENTITY is required" >&2
+  exit 1
+fi
+
+if [ -n "$known_hosts" ]; then
+  test -f "$known_hosts" || {
+    printf '%s\n' "guest-ssh: known-hosts file does not exist: $known_hosts" >&2
+    exit 1
+  }
+  test -r "$known_hosts" || {
+    printf '%s\n' "guest-ssh: known-hosts file is not readable: $known_hosts" >&2
+    exit 1
+  }
+fi
+
+case "$connect_timeout" in
+  ''|*[!0-9]*)
+    printf '%s\n' "guest-ssh: invalid connect timeout: $connect_timeout" >&2
+    exit 2
+    ;;
+esac
+
+case "$mode" in
+  ssh)
+    if [ "$#" -lt 2 ]; then
+      printf '%s\n' "usage: guest-ssh ssh TARGET PORT [COMMAND ...]" >&2
+      exit 2
+    fi
+    target=$1
+    port=$2
+    shift 2
+    command -v "${DISTILL_SSH:-ssh}" >/dev/null 2>&1 || {
+      printf '%s\n' "guest-ssh: ssh is required" >&2
+      exit 1
+    }
+    case "$port" in
+      ''|*[!0-9]*)
+        printf '%s\n' "guest-ssh: invalid port: $port" >&2
+        exit 2
+        ;;
+    esac
+    if [ -n "$identity" ] && [ -n "$known_hosts" ]; then
+      exec "${DISTILL_SSH:-ssh}" \
+        -o BatchMode=yes -o IdentitiesOnly=yes -i "$identity" \
+        -o UserKnownHostsFile="$known_hosts" -o ConnectTimeout="$connect_timeout" \
+        -p "$port" "$target" "$@"
+    elif [ -n "$identity" ]; then
+      exec "${DISTILL_SSH:-ssh}" \
+        -o BatchMode=yes -o IdentitiesOnly=yes -i "$identity" \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout="$connect_timeout" -p "$port" "$target" "$@"
+    elif [ -n "$known_hosts" ]; then
+      exec "${DISTILL_SSH:-ssh}" \
+        -o BatchMode=yes -o UserKnownHostsFile="$known_hosts" \
+        -o ConnectTimeout="$connect_timeout" -p "$port" "$target" "$@"
+    else
+      exec "${DISTILL_SSH:-ssh}" \
+        -o BatchMode=yes -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null -o ConnectTimeout="$connect_timeout" \
+        -p "$port" "$target" "$@"
+    fi
+    ;;
+  scp)
+    if [ "$#" -lt 1 ]; then
+      printf '%s\n' "usage: guest-ssh scp PORT [SOURCE ...]" >&2
+      exit 2
+    fi
+    port=$1
+    shift
+    command -v "${DISTILL_SCP:-scp}" >/dev/null 2>&1 || {
+      printf '%s\n' "guest-ssh: scp is required" >&2
+      exit 1
+    }
+    case "$port" in
+      ''|*[!0-9]*)
+        printf '%s\n' "guest-ssh: invalid port: $port" >&2
+        exit 2
+        ;;
+      esac
+    if [ -n "$identity" ] && [ -n "$known_hosts" ]; then
+      exec "${DISTILL_SCP:-scp}" \
+        -o BatchMode=yes -o IdentitiesOnly=yes -i "$identity" \
+        -o UserKnownHostsFile="$known_hosts" -o ConnectTimeout="$connect_timeout" \
+        -P "$port" "$@"
+    elif [ -n "$identity" ]; then
+      exec "${DISTILL_SCP:-scp}" \
+        -o BatchMode=yes -o IdentitiesOnly=yes -i "$identity" \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout="$connect_timeout" -P "$port" "$@"
+    elif [ -n "$known_hosts" ]; then
+      exec "${DISTILL_SCP:-scp}" \
+        -o BatchMode=yes -o UserKnownHostsFile="$known_hosts" \
+        -o ConnectTimeout="$connect_timeout" -P "$port" "$@"
+    else
+      exec "${DISTILL_SCP:-scp}" \
+        -o BatchMode=yes -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null -o ConnectTimeout="$connect_timeout" \
+        -P "$port" "$@"
+    fi
+    ;;
+  *)
+    printf '%s\n' "guest-ssh: mode must be ssh or scp" >&2
+    exit 2
+    ;;
+esac

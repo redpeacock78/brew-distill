@@ -31,21 +31,92 @@ permissions:
 jobs:
   legacy:
     runs-on: macos-15-intel
-    continue-on-error: true
     env:
       DISTILL_MACOS: ${{ inputs.macos }}
       DISTILL_INSTALLER_VERSION: ${{ inputs.installer_version }}
       DISTILL_BATCH_JSON: ${{ inputs.batch }}
       DISTILL_LEGACY_BOOTSTRAP: ${{ vars.DISTILL_LEGACY_BOOTSTRAP }}
       DISTILL_OPENCORE_DIR: ${{ vars.DISTILL_OPENCORE_DIR }}
+      DISTILL_OPENCORE_ARCHIVE_URL: ${{ vars.DISTILL_OPENCORE_ARCHIVE_URL }}
+      DISTILL_OPENCORE_ARCHIVE_SHA256: ${{ vars.DISTILL_OPENCORE_ARCHIVE_SHA256 }}
       DISTILL_RELEASE_BUILD: "1"
       DISTILL_VERIFY_AFTER_BUILD: "1"
+      DISTILL_OPENCORE_STRICT: "1"
+      DISTILL_CREATE_OPENCORE_DISK: "1"
+      DISTILL_REQUIRE_GUEST_SSH_IDENTITY: "1"
+      DISTILL_GUEST_SSH_TARGET: distill@127.0.0.1
+      DISTILL_GUEST_SSH_PORT: "2222"
+      DISTILL_QEMU_ARGS_JSON: ${{ secrets.DISTILL_QEMU_ARGS_JSON }}
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_ARTIFACT_DOMAIN: ${{ vars.DISTILL_ARTIFACT_DOMAIN }}
       HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Prepare OpenCore input
+        run: |
+          if [ -n "$DISTILL_OPENCORE_DIR" ]; then
+            test -d "$DISTILL_OPENCORE_DIR"
+          else
+            test -n "$DISTILL_OPENCORE_ARCHIVE_URL" || {
+              echo "Legacy requires DISTILL_OPENCORE_DIR or DISTILL_OPENCORE_ARCHIVE_URL" >&2
+              exit 1
+            }
+            test -n "$DISTILL_OPENCORE_ARCHIVE_SHA256" || {
+              echo "Legacy requires DISTILL_OPENCORE_ARCHIVE_SHA256 for archive verification" >&2
+              exit 1
+            }
+            source_dir="$RUNNER_TEMP/brew-distill-opencore"
+            ./scripts/hvf/fetch-opencore \
+              "$DISTILL_OPENCORE_ARCHIVE_URL" \
+              "$DISTILL_OPENCORE_ARCHIVE_SHA256" \
+              "$source_dir"
+            printf '%s\n' "DISTILL_OPENCORE_DIR=$source_dir" >> "$GITHUB_ENV"
+          fi
+
+      - name: Prepare guest SSH credentials
+        env:
+          DISTILL_GUEST_SSH_PRIVATE_KEY: ${{ secrets.DISTILL_GUEST_SSH_PRIVATE_KEY }}
+          DISTILL_GUEST_SSH_KNOWN_HOSTS_TEXT: ${{ secrets.DISTILL_GUEST_SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$DISTILL_GUEST_SSH_PRIVATE_KEY" || {
+            echo "Legacy requires the DISTILL_GUEST_SSH_PRIVATE_KEY secret" >&2
+            exit 1
+          }
+          key="$RUNNER_TEMP/brew-distill-guest-key"
+          public_key="$RUNNER_TEMP/brew-distill-guest-key.pub"
+          printf '%s\n' "$DISTILL_GUEST_SSH_PRIVATE_KEY" > "$key"
+          chmod 600 "$key"
+          ssh-keygen -y -P '' -f "$key" > "$public_key"
+          chmod 644 "$public_key"
+          test -s "$public_key"
+          {
+            printf '%s\n' "DISTILL_GUEST_SSH_IDENTITY=$key"
+            printf '%s\n' "DISTILL_GUEST_SSH_PUBLIC_KEY_FILE=$public_key"
+          } >> "$GITHUB_ENV"
+          if [ -n "$DISTILL_GUEST_SSH_KNOWN_HOSTS_TEXT" ]; then
+            known_hosts="$RUNNER_TEMP/brew-distill-known-hosts"
+            printf '%s\n' "$DISTILL_GUEST_SSH_KNOWN_HOSTS_TEXT" > "$known_hosts"
+            chmod 600 "$known_hosts"
+            printf '%s\n' "DISTILL_GUEST_KNOWN_HOSTS=$known_hosts" >> "$GITHUB_ENV"
+          fi
+
+      - name: Validate Legacy inputs
+        run: |
+          test -n "$HOMEBREW_ARTIFACT_DOMAIN"
+          test -x "$DISTILL_LEGACY_BOOTSTRAP"
+          test -d "$DISTILL_OPENCORE_DIR"
+          test -n "$DISTILL_QEMU_ARGS_JSON"
+          printf '%s' "$DISTILL_QEMU_ARGS_JSON" | jq -e \
+            'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null
+          test -f "$DISTILL_GUEST_SSH_IDENTITY"
+          test -s "$DISTILL_GUEST_SSH_PUBLIC_KEY_FILE"
+          config=$(find "$DISTILL_OPENCORE_DIR" -type f -name config.plist -print | sed -n '1p')
+          test -n "$config"
+          test -f "$DISTILL_OPENCORE_DIR/EFI/BOOT/BOOTx64.efi"
+          test -f "$DISTILL_OPENCORE_DIR/EFI/OC/OpenCore.efi"
+          plutil -lint "$config" >/dev/null
 
       - name: Authorize Homebrew bottle downloads
         run: |
@@ -58,8 +129,6 @@ jobs:
 
       - name: Run Legacy PoC
         run: |
-          test -n "$HOMEBREW_ARTIFACT_DOMAIN"
-          test -x "$DISTILL_LEGACY_BOOTSTRAP"
           printf '%s\n' "$DISTILL_BATCH_JSON" > legacy-batch.json
           DISTILL_LEGACY_OUTPUT_DIR=out \
             ./scripts/hvf/legacy-poc "$DISTILL_MACOS" legacy-batch.json
@@ -82,6 +151,8 @@ jobs:
             out/hvf/startosinstall-usage.txt
             out/hvf/base.json
             out/hvf/base-check.txt
+            out/hvf/opencore-disk.json
+            out/hvf/ssh-ready.json
             out/hvf/guest-console.log
             out/hvf/qemu.log
             out/hvf/opencore.log

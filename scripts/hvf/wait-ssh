@@ -11,27 +11,21 @@ target=$1
 port=${2:-${DISTILL_GUEST_SSH_PORT:-2222}}
 timeout=${3:-${DISTILL_SSH_TIMEOUT:-600}}
 output=${DISTILL_GUEST_INFO:-out/hvf/guest-info.txt}
-ssh_cmd=${DISTILL_SSH:-ssh}
+repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+ssh_guest="$repo_dir/scripts/hvf/guest-ssh"
 
 case "$port" in ""|*[!0-9]*) printf '%s\n' "wait-ssh: invalid port" >&2; exit 2 ;; esac
 case "$timeout" in ""|*[!0-9]*) printf '%s\n' "wait-ssh: invalid timeout" >&2; exit 2 ;; esac
-command -v "$ssh_cmd" >/dev/null 2>&1 || {
-  printf '%s\n' "wait-ssh: ssh is required" >&2
+test -x "$ssh_guest" || {
+  printf '%s\n' "wait-ssh: guest SSH wrapper is unavailable: $ssh_guest" >&2
   exit 1
 }
 mkdir -p "$(dirname -- "$output")"
 
 start=$(date +%s)
 while :; do
-  if [ -n "${DISTILL_GUEST_KNOWN_HOSTS:-}" ]; then
-    if "$ssh_cmd" -o BatchMode=yes -o ConnectTimeout=5 \
-      -o UserKnownHostsFile="$DISTILL_GUEST_KNOWN_HOSTS" -p "$port" "$target" \
-      'uname -a && sw_vers' > "$output" 2>&1; then
-      printf '%s\n' "SSH ready: $target:$port"
-      exit 0
-    fi
-  elif "$ssh_cmd" -o BatchMode=yes -o ConnectTimeout=5 \
-    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$port" "$target" \
+  if DISTILL_GUEST_SSH_CONNECT_TIMEOUT=5 \
+    "$ssh_guest" ssh "$target" "$port" \
     'uname -a && sw_vers' > "$output" 2>&1; then
     printf '%s\n' "SSH ready: $target:$port"
     exit 0

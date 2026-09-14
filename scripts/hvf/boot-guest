@@ -28,6 +28,11 @@ unless ENV["DISTILL_ALLOW_NON_DARWIN"] == "1"
 end
 
 qemu = ENV.fetch("QEMU_SYSTEM_X86_64", "qemu-system-x86_64")
+opencore_disk = ENV["DISTILL_OPENCORE_DISK"]
+if opencore_disk && !opencore_disk.empty?
+  opencore_disk = File.expand_path(opencore_disk)
+  fail_with "OpenCore disk does not exist: #{opencore_disk}" unless File.file?(opencore_disk)
+end
 config_path = ENV["DISTILL_QEMU_CONFIG"]
 config = {}
 if config_path
@@ -60,11 +65,17 @@ serial_log = File.join(output_dir, "guest-console.log")
 replacements = {
   "{{DISK}}" => disk,
   "{{SERIAL_LOG}}" => serial_log,
-  "{{OPENCORE}}" => ENV.fetch("DISTILL_OPENCORE_DISK", "")
+  "{{OPENCORE}}" => opencore_disk || ""
 }
 args = args.map do |arg|
   replacements.each { |from, to| arg = arg.gsub(from, to) }
   arg
+end
+if opencore_disk && !args.any? { |arg| arg.include?(opencore_disk) }
+  args += [
+    "-drive", "if=none,id=OpenCoreBoot,format=raw,readonly=on,file=#{opencore_disk}",
+    "-device", "ide-hd,bus=sata.2,drive=OpenCoreBoot"
+  ]
 end
 args += ["-serial", "file:#{serial_log}"] unless args.any? { |arg| arg == "-serial" || arg.start_with?("-serial=") }
 args += ["-drive", "file=#{disk},format=qcow2"] unless args.any? { |arg| arg.include?(disk) }

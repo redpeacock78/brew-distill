@@ -12,6 +12,7 @@ trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$test_dir/bin" "$test_dir/build" "$test_dir/verify" "$test_dir/remote"
 printf '%s\n' overlay > "$test_dir/overlay.qcow2"
+printf '%s\n' test-key > "$test_dir/guest-key"
 cat > "$test_dir/bin/boot" <<'EOF'
 #!/bin/sh
 set -eu
@@ -23,7 +24,7 @@ set -eu
 printf '%s\n' "$*" >> "$FAKE_REMOTE_LOG"
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -o|-p) shift 2 ;;
+    -o|-p|-i) shift 2 ;;
     *) shift; break ;;
   esac
 done
@@ -63,7 +64,7 @@ set -eu
 printf '%s\n' "$*" >> "$FAKE_REMOTE_LOG"
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -o|-P) shift 2 ;;
+    -o|-P|-i) shift 2 ;;
     *) break ;;
   esac
 done
@@ -108,6 +109,8 @@ run_with_fakes() {
     "DISTILL_GUEST_BOOT=$test_dir/bin/boot" \
     "DISTILL_SSH=$test_dir/bin/ssh" \
     "DISTILL_SCP=$test_dir/bin/scp" \
+    "DISTILL_GUEST_SSH_IDENTITY=$test_dir/guest-key" \
+    DISTILL_REQUIRE_GUEST_SSH_IDENTITY=1 \
     DISTILL_SSH_TIMEOUT=2 \
     "FAKE_BOOT_LOG=$test_dir/boot.log" \
     "FAKE_REMOTE_LOG=$test_dir/remote.log" \
@@ -130,6 +133,7 @@ jq -e '.schema == 4 and .formula.name == "dummy" and .platform.arch == "x86_64" 
 grep -F -- 'brew install --build-bottle --formula dummy' "$test_dir/remote.log" >/dev/null
 grep -F -- 'brew bottle --json' "$test_dir/remote.log" >/dev/null
 grep -F -- 'brew info --json=v2 --formula' "$test_dir/remote.log" >/dev/null
+grep -F -- "-i $test_dir/guest-key" "$test_dir/remote.log" >/dev/null
 
 printf '%s\n' overlay > "$test_dir/verify-overlay.qcow2"
 : > "$test_dir/remote.log"

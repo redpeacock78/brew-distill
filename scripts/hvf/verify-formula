@@ -24,8 +24,6 @@ fi
 mkdir -p "$artifact_dir"
 repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 boot=${DISTILL_GUEST_BOOT:-$repo_dir/scripts/hvf/boot-guest}
-ssh_cmd=${DISTILL_SSH:-ssh}
-scp_cmd=${DISTILL_SCP:-scp}
 target=${DISTILL_GUEST_SSH_TARGET:-distill@127.0.0.1}
 port=${DISTILL_GUEST_SSH_PORT:-2222}
 ssh_timeout=${DISTILL_GUEST_SSH_TIMEOUT:-600}
@@ -33,13 +31,10 @@ safe_name=$(printf '%s' "$formula" | tr '/@+' '___')
 guest_dir="/tmp/brew-distill-verify-$safe_name"
 bottle_name=$(basename -- "$bottle")
 guest_pid=
+guest_ssh="$repo_dir/scripts/hvf/guest-ssh"
 
-command -v "$ssh_cmd" >/dev/null 2>&1 || {
-  printf '%s\n' "verify-formula: ssh is required" >&2
-  exit 1
-}
-command -v "$scp_cmd" >/dev/null 2>&1 || {
-  printf '%s\n' "verify-formula: scp is required" >&2
+test -x "$guest_ssh" || {
+  printf '%s\n' "verify-formula: guest SSH wrapper is unavailable: $guest_ssh" >&2
   exit 1
 }
 if [ ! -x "$boot" ]; then
@@ -88,23 +83,11 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 ssh_guest() {
-  if [ -n "${DISTILL_GUEST_KNOWN_HOSTS:-}" ]; then
-    "$ssh_cmd" -o BatchMode=yes -o UserKnownHostsFile="$DISTILL_GUEST_KNOWN_HOSTS" \
-      -p "$port" "$target" "$@"
-  else
-    "$ssh_cmd" -o BatchMode=yes -o StrictHostKeyChecking=no \
-      -o UserKnownHostsFile=/dev/null -p "$port" "$target" "$@"
-  fi
+  "$guest_ssh" ssh "$target" "$port" "$@"
 }
 
 scp_guest() {
-  if [ -n "${DISTILL_GUEST_KNOWN_HOSTS:-}" ]; then
-    "$scp_cmd" -o BatchMode=yes -o UserKnownHostsFile="$DISTILL_GUEST_KNOWN_HOSTS" \
-      -P "$port" "$@"
-  else
-    "$scp_cmd" -o BatchMode=yes -o StrictHostKeyChecking=no \
-      -o UserKnownHostsFile=/dev/null -P "$port" "$@"
-  fi
+  "$guest_ssh" scp "$port" "$@"
 }
 
 brew_guest() {

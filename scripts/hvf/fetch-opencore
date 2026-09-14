@@ -1,0 +1,115 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -ne 3 ]; then
+  printf '%s\n' "usage: fetch-opencore ARCHIVE-URL SHA256 OUTPUT-DIR" >&2
+  exit 2
+fi
+
+url=$1
+expected_sha=$2
+output_dir=$3
+case "$url" in
+  https://?*) ;;
+  *)
+    printf '%s\n' "fetch-opencore: archive URL must use HTTPS" >&2
+    exit 2
+    ;;
+esac
+if [ "${#expected_sha}" -ne 64 ]; then
+  printf '%s\n' "fetch-opencore: SHA256 must contain 64 hexadecimal characters" >&2
+  exit 2
+fi
+case "$expected_sha" in
+  ''|*[!0-9a-fA-F]*)
+    printf '%s\n' "fetch-opencore: SHA256 must contain only hexadecimal characters" >&2
+    exit 2
+    ;;
+esac
+download_timeout=${DISTILL_DOWNLOAD_TIMEOUT:-600}
+case "$download_timeout" in
+  ''|*[!0-9]*)
+    printf '%s\n' "fetch-opencore: invalid download timeout: $download_timeout" >&2
+    exit 2
+    ;;
+esac
+test ! -e "$output_dir" || {
+  printf '%s\n' "fetch-opencore: output already exists: $output_dir" >&2
+  exit 1
+}
+
+curl_cmd=${DISTILL_CURL:-curl}
+for tool in "$curl_cmd" shasum unzip jq find; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    printf '%s\n' "fetch-opencore: required tool is unavailable: $tool" >&2
+    exit 1
+  }
+done
+
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-opencore-fetch.XXXXXX")
+archive="$work_dir/opencore.zip"
+extracted="$work_dir/extracted"
+mkdir -p "$extracted"
+cleanup() {
+  rm -rf "$work_dir"
+}
+trap cleanup EXIT HUP INT TERM
+
+"$curl_cmd" -fsSL --retry 3 --connect-timeout 15 \
+  --max-time "$download_timeout" -o "$archive" "$url"
+actual_sha=$(shasum -a 256 "$archive" | awk '{print $1}')
+if [ "$(printf '%s' "$expected_sha" | tr '[:upper:]' '[:lower:]')" != "$actual_sha" ]; then
+  printf '%s\n' "fetch-opencore: archive SHA256 mismatch" >&2
+  exit 1
+fi
+
+unzip -Z1 "$archive" | while IFS= read -r entry; do
+  case "$entry" in
+    ''|.|..|/*|../*|*/../*|*/..)
+      printf '%s\n' "fetch-opencore: unsafe archive entry: $entry" >&2
+      exit 1
+      ;;
+  esac
+done
+unzip -q "$archive" -d "$extracted"
+if find "$extracted" -type l -print | grep -q .; then
+  printf '%s\n' "fetch-opencore: symlinked archive entries are not accepted" >&2
+  exit 1
+fi
+
+efi_dir=
+while IFS= read -r candidate; do
+  if [ -f "$candidate/BOOT/BOOTx64.efi" ] &&
+     [ -f "$candidate/OC/OpenCore.efi" ]; then
+    efi_dir=$candidate
+  fi
+done <<EOF
+$(find "$extracted" -type d -name EFI -print | sort)
+EOF
+[ -n "$efi_dir" ] || {
+  printf '%s\n' "fetch-opencore: archive has no complete EFI/BOOT and EFI/OC tree" >&2
+  exit 1
+}
+
+config="$efi_dir/OC/config.plist"
+if [ ! -f "$config" ]; then
+  config=$(find "$extracted" -type f -name config.plist -print | sed -n '1p')
+  [ -n "$config" ] || {
+    printf '%s\n' "fetch-opencore: archive has no config.plist" >&2
+    exit 1
+  }
+  mkdir -p "$efi_dir/OC"
+  cp "$config" "$efi_dir/OC/config.plist"
+fi
+
+mkdir -p "$output_dir"
+cp -R "$efi_dir" "$output_dir/EFI"
+jq -n \
+  --arg url "$url" \
+  --arg sha256 "$actual_sha" \
+  --arg source "$efi_dir" \
+  '{schema:1,url:$url,archive_sha256:$sha256,source:$source,vm_image:false}' \
+  > "$output_dir/opencore-source.json"
+printf '%s\n' "OpenCore fetched: $output_dir"
