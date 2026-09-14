@@ -24,6 +24,7 @@ find "$output_dir" -type f \( \
   -o -name 'qemu.log' -o -name 'opencore.log' -o -name 'guest-console.log' \
   -o -name 'guest-info.*' -o -name 'guest-*.json' -o -name '*.guest-*.json' \
   -o -name 'startosinstall-usage.txt' \
+  -o -name 'full-installers.txt' \
   -o -name 'installer.json' -o -name 'installer-capabilities.json' \
   -o -name 'opencore.json' -o -name 'opencore-disk.json' -o -name 'ssh-ready.json' \
   -o -name 'legacy-bootstrap.json' -o -name 'unattended-install.json' \

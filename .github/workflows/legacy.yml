@@ -16,7 +16,7 @@ on:
       installer_version:
         description: Full Installer version accepted by softwareupdate
         required: true
-        default: "13.6.1"
+        default: "13.7.7"
         type: string
       batch:
         description: Formula batch JSON
@@ -234,6 +234,7 @@ jobs:
             out/hvf/installer.json
             out/hvf/installer-capabilities.json
             out/hvf/startosinstall-usage.txt
+            out/hvf/full-installers.txt
             out/hvf/base.json
             out/hvf/base-check.txt
             out/hvf/opencore-disk.json
