@@ -104,19 +104,61 @@ jobs:
 
       - name: Validate Legacy inputs
         run: |
-          test -n "$HOMEBREW_ARTIFACT_DOMAIN"
-          test -x "$DISTILL_LEGACY_BOOTSTRAP"
-          test -d "$DISTILL_OPENCORE_DIR"
-          test -n "$DISTILL_QEMU_ARGS_JSON"
+          test -n "$HOMEBREW_ARTIFACT_DOMAIN" || {
+            echo "Legacy requires the DISTILL_ARTIFACT_DOMAIN repository variable" >&2
+            exit 1
+          }
+          test -n "$DISTILL_LEGACY_BOOTSTRAP" || {
+            echo "Legacy requires the DISTILL_LEGACY_BOOTSTRAP repository variable" >&2
+            exit 1
+          }
+          if [ ! -x "$DISTILL_LEGACY_BOOTSTRAP" ]; then
+            bootstrap_path=$(command -v "$DISTILL_LEGACY_BOOTSTRAP" 2>/dev/null || true)
+            test -n "$bootstrap_path" || {
+              echo "Legacy bootstrap hook is not executable: $DISTILL_LEGACY_BOOTSTRAP" >&2
+              exit 1
+            }
+          fi
+          test -d "$DISTILL_OPENCORE_DIR" || {
+            echo "Legacy OpenCore input is unavailable: $DISTILL_OPENCORE_DIR" >&2
+            exit 1
+          }
+          test -n "$DISTILL_QEMU_ARGS_JSON" || {
+            echo "Legacy requires the DISTILL_QEMU_ARGS_JSON secret" >&2
+            exit 1
+          }
           printf '%s' "$DISTILL_QEMU_ARGS_JSON" | jq -e \
             'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null
-          test -f "$DISTILL_GUEST_SSH_IDENTITY"
-          test -s "$DISTILL_GUEST_SSH_PUBLIC_KEY_FILE"
+          printf '%s' "$DISTILL_QEMU_ARGS_JSON" | jq -e \
+            'any(.[]; . == "-accel=hvf") or ([range(0; length - 1) as $i | .[$i] == "-accel" and .[$i + 1] == "hvf"] | any)' >/dev/null || {
+            echo "DISTILL_QEMU_ARGS_JSON must request -accel hvf" >&2
+            exit 1
+          }
+          test -f "$DISTILL_GUEST_SSH_IDENTITY" || {
+            echo "Legacy guest SSH identity was not prepared" >&2
+            exit 1
+          }
+          test -s "$DISTILL_GUEST_SSH_PUBLIC_KEY_FILE" || {
+            echo "Legacy guest SSH public key was not prepared" >&2
+            exit 1
+          }
           config=$(find "$DISTILL_OPENCORE_DIR" -type f -name config.plist -print | sed -n '1p')
-          test -n "$config"
-          test -f "$DISTILL_OPENCORE_DIR/EFI/BOOT/BOOTx64.efi"
-          test -f "$DISTILL_OPENCORE_DIR/EFI/OC/OpenCore.efi"
-          plutil -lint "$config" >/dev/null
+          test -n "$config" || {
+            echo "Legacy OpenCore input has no config.plist" >&2
+            exit 1
+          }
+          test -f "$DISTILL_OPENCORE_DIR/EFI/BOOT/BOOTx64.efi" || {
+            echo "Legacy OpenCore input lacks EFI/BOOT/BOOTx64.efi" >&2
+            exit 1
+          }
+          test -f "$DISTILL_OPENCORE_DIR/EFI/OC/OpenCore.efi" || {
+            echo "Legacy OpenCore input lacks EFI/OC/OpenCore.efi" >&2
+            exit 1
+          }
+          plutil -lint "$config" >/dev/null || {
+            echo "Legacy OpenCore config.plist is invalid: $config" >&2
+            exit 1
+          }
 
       - name: Authorize Homebrew bottle downloads
         run: |
