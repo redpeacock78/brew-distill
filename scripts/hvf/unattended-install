@@ -1,0 +1,419 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "fileutils"
+require "json"
+require "optparse"
+require "socket"
+require "time"
+require "tmpdir"
+
+TERMINAL_NAV = %w[ctrl-f2 right right right right down down down ret].freeze
+
+CHARMAP = {
+  " " => "spc", "." => "dot", "/" => "slash", "-" => "minus", "_" => "shift-minus",
+  "," => "comma", ";" => "semicolon", ":" => "shift-semicolon", "=" => "equal",
+  "+" => "shift-equal", "'" => "apostrophe", '"' => "shift-apostrophe",
+  "\\" => "backslash", "|" => "shift-backslash", "*" => "shift-8", "$" => "shift-4",
+  "(" => "shift-9", ")" => "shift-0", "&" => "shift-7", "!" => "shift-1",
+  "{" => "shift-bracket_left", "}" => "shift-bracket_right", "<" => "shift-comma",
+  ">" => "shift-dot", "?" => "shift-slash", "#" => "shift-3", "%" => "shift-5",
+  "@" => "shift-2", "^" => "shift-6", "~" => "shift-grave_accent", "`" => "grave_accent"
+}.freeze
+
+class UnattendedError < StandardError; end
+
+Frame = Struct.new(
+  :size, :digest, :width, :height, :visible, :signature,
+  keyword_init: true
+) do
+  def dimensions
+    [width, height]
+  end
+
+  def valid?
+    width.positive? && height.positive? && !digest.empty?
+  end
+
+  def distance(other)
+    return Float::INFINITY unless other && dimensions == other.dimensions
+
+    signature.each_index.sum { |index| (signature[index] - other.signature[index]).abs }
+  end
+
+  def self.empty
+    new(size: 0, digest: "", width: 0, height: 0, visible: false, signature: [])
+  end
+
+  def self.read(path)
+    return empty unless File.file?(path)
+
+    data = File.binread(path)
+    header = data.match(/\AP6\s+(\d+)\s+(\d+)\s+(\d+)\s/)
+    return empty unless header
+
+    width = header[1].to_i
+    height = header[2].to_i
+    max_value = header[3].to_i
+    return empty unless width.positive? && height.positive? && max_value.positive?
+
+    payload_offset = header.end(0)
+    payload_size = data.bytesize - payload_offset
+    signature = sample_signature(data, payload_offset, width, height, max_value)
+    visible = signature.each_slice(3).count { |red, green, blue| red + green + blue > 24 } >= 4
+    new(
+      size: data.bytesize,
+      digest: Digest::MD5.hexdigest(data),
+      width: width,
+      height: height,
+      visible: visible && payload_size.positive?,
+      signature: signature
+    )
+  rescue Errno::ENOENT
+    empty
+  end
+
+  def self.sample_signature(data, payload_offset, width, height, max_value)
+    columns = 32
+    rows = 18
+    values = []
+    rows.times do |row|
+      y = [height - 1, (row * height) / rows].min
+      columns.times do |column|
+        x = [width - 1, (column * width) / columns].min
+        pixel = payload_offset + ((y * width) + x) * 3
+        3.times do |channel|
+          value = data.getbyte(pixel + channel) || 0
+          values << ((value * 255) / max_value)
+        end
+      end
+    end
+    values
+  end
+  private_class_method :sample_signature
+end
+
+def monotonic
+  Process.clock_gettime(Process::CLOCK_MONOTONIC)
+end
+
+def env_number(name, default)
+  value = ENV.fetch(name, default.to_s)
+  Float(value)
+rescue ArgumentError
+  raise UnattendedError, "invalid #{name}: #{value}"
+end
+
+class Hmp
+  def initialize(path, timeout:, frame_path:)
+    @path = path
+    @timeout = timeout
+    @frame_path = frame_path
+  end
+
+  def command(command)
+    socket = connect
+    read_prompt(socket)
+    socket.write("#{command}\n")
+    response = read_prompt(socket)
+    socket.close
+    response
+  rescue StandardError
+    socket&.close
+    raise
+  end
+
+  def frame
+    FileUtils.rm_f(@frame_path)
+    response = command("screendump #{@frame_path}")
+    raise UnattendedError, "QEMU screendump failed: #{response}" if response.match?(/error|unknown/i)
+    sleep env_number("DISTILL_UNATTENDED_FRAME_WAIT", 0.6)
+    Frame.read(@frame_path)
+  end
+
+  private
+
+  def connect
+    deadline = monotonic + @timeout
+    loop do
+      begin
+        return UNIXSocket.new(@path)
+      rescue Errno::ENOENT, Errno::ECONNREFUSED
+        raise UnattendedError, "QEMU monitor unavailable: #{@path}" if monotonic >= deadline
+        sleep 0.5
+      end
+    end
+  end
+
+  def read_prompt(socket)
+    buffer = +""
+    deadline = monotonic + @timeout
+    until buffer.end_with?("(qemu) ")
+      remaining = deadline - monotonic
+      raise UnattendedError, "QEMU monitor timed out: #{@path}" if remaining <= 0
+
+      IO.select([socket], nil, nil, remaining)
+      begin
+        buffer << socket.read_nonblock(4096)
+      rescue IO::WaitReadable
+        next
+      rescue EOFError
+        raise UnattendedError, "QEMU monitor closed unexpectedly: #{@path}"
+      end
+    end
+    buffer
+  end
+end
+
+class Driver
+  def initialize(monitor:, disk_gib:, command:, output:, frame_path:)
+    @monitor = Hmp.new(
+      monitor,
+      timeout: env_number("DISTILL_UNATTENDED_MONITOR_TIMEOUT", 30),
+      frame_path: frame_path
+    )
+    @disk_gib = disk_gib
+    @command = command
+    @output = output
+    @events = []
+    @picker_timeout = env_number("DISTILL_UNATTENDED_PICKER_TIMEOUT", 600)
+    @recovery_timeout = env_number("DISTILL_UNATTENDED_RECOVERY_TIMEOUT", 900)
+    @recovery_settle = env_number("DISTILL_UNATTENDED_RECOVERY_SETTLE", 240)
+    @recovery_still_max = env_number("DISTILL_UNATTENDED_RECOVERY_STILL_MAX", 600)
+    @recovery_still_frames = Integer(env_number("DISTILL_UNATTENDED_RECOVERY_STILL_FRAMES", 3))
+    @picker_settle = env_number("DISTILL_UNATTENDED_PICKER_SETTLE", 2)
+    @terminal_wait = env_number("DISTILL_UNATTENDED_TERMINAL_WAIT", 10)
+    @install_reboot_timeout = env_number("DISTILL_UNATTENDED_INSTALL_REBOOT_TIMEOUT", 1800)
+    @install_reboot_grace = env_number("DISTILL_UNATTENDED_INSTALL_REBOOT_GRACE", 30)
+    @done_quiet = env_number("DISTILL_UNATTENDED_DONE_QUIET", 120)
+    @hung_still = env_number("DISTILL_UNATTENDED_HUNG_STILL", 600)
+    @picker_repress = env_number("DISTILL_UNATTENDED_PICKER_REPRESS", 30)
+    @total_budget = env_number("DISTILL_UNATTENDED_TOTAL_BUDGET", 10_800)
+    @poll = env_number("DISTILL_UNATTENDED_POLL", 6)
+    @key_delay = env_number("DISTILL_UNATTENDED_KEY_DELAY", 0.4)
+    @type_delay = env_number("DISTILL_UNATTENDED_TYPE_DELAY", 0.12)
+    @picker_frame = nil
+    @recovery_frame = nil
+  end
+
+  def run
+    started = monotonic
+    event "waiting for the OpenCore picker"
+    @picker_frame = wait_for(@picker_timeout, "the OpenCore picker") do
+      frame = @monitor.frame
+      frame.visible ? frame : nil
+    end
+    sleep @picker_settle
+    send_key "ret"
+
+    event "waiting for macOS recovery"
+    @recovery_frame = wait_for(@recovery_timeout, "macOS recovery") do
+      frame = @monitor.frame
+      frame.visible && frame.digest != @picker_frame.digest ? frame : nil
+    end
+    event "recovery loaded; settling #{@recovery_settle}s"
+    sleep @recovery_settle
+    @recovery_frame = wait_until_still
+
+    event "opening the recovery Terminal"
+    TERMINAL_NAV.each do |key|
+      send_key key
+      sleep @key_delay
+    end
+    sleep @terminal_wait
+    event "typing the erase and startosinstall command"
+    type_text @command
+    sleep 1
+    send_key "ret"
+
+    event "waiting for the installer's first reboot"
+    sleep @install_reboot_grace
+    wait_for(@install_reboot_timeout, "the installer's first reboot") do
+      frame = @monitor.frame
+      picker_like?(frame) ? frame : nil
+    end
+    event "first reboot reached; detaching the recovery disk"
+    @monitor.command "stop"
+    wait_for(120, "QEMU to pause") { @monitor.command("info status").match?(/paused/i) }
+    response = @monitor.command "device_del InstallMediaDevice"
+    raise UnattendedError, "cannot detach recovery media: #{response}" if response.match?(/error|not found/i)
+    sleep 2
+    @monitor.command "cont"
+
+    boots = 0
+    last_picker = monotonic
+    last_change = monotonic
+    last_press = monotonic - @picker_repress
+    cycles = 0
+    seen = ""
+    waiting_for_guest_boot = false
+    guest_boot_started = nil
+    while monotonic - started < @total_budget
+      frame = @monitor.frame
+      digest = frame.digest
+      changed = frame.valid? && digest != seen
+      if changed
+        seen = digest
+        last_change = monotonic
+      end
+
+      if picker_like?(frame)
+        last_picker = monotonic
+        if changed
+          boots += 1
+          sleep 2
+          send_key "ret"
+          last_press = monotonic
+          waiting_for_guest_boot = true
+          guest_boot_started = nil
+          event "confirmed boot entry after reboot #{boots}"
+          sleep @picker_repress
+        elsif monotonic - last_press >= @picker_repress
+          send_key "ret"
+          last_press = monotonic
+        end
+      elsif waiting_for_guest_boot
+        waiting_for_guest_boot = false
+        guest_boot_started = monotonic
+      end
+
+      if boots.positive? && guest_boot_started && monotonic - last_change >= @done_quiet
+        elapsed = (monotonic - started).to_i
+        event "install finished after #{boots} reboot(s)"
+        write_result(reboots: boots, elapsed: elapsed)
+        return
+      end
+
+      if boots.positive? && guest_boot_started.nil? && monotonic - last_change > @hung_still
+        if cycles >= 2
+          raise UnattendedError, "macOS appears hung after #{cycles} power cycles"
+        end
+        cycles += 1
+        event "guest appears hung; power-cycling (#{cycles}/2)"
+        @monitor.command "stop"
+        wait_for(120, "QEMU to pause") { @monitor.command("info status").match?(/paused/i) }
+        @monitor.command "cont"
+        last_change = last_picker = monotonic
+        seen = ""
+      end
+      sleep @poll
+    end
+
+    raise UnattendedError, "install did not finish within #{@total_budget.to_i}s"
+  end
+
+  private
+
+  def event(message)
+    line = "#{Time.now.utc.iso8601} #{message}"
+    @events << line
+    puts line
+  end
+
+  def send_key(key)
+    response = @monitor.command "sendkey #{key}"
+    raise UnattendedError, "QEMU rejected key #{key}: #{response}" if response.match?(/error|unknown/i)
+  end
+
+  def picker_like?(frame)
+    return false unless frame&.visible && @picker_frame
+    return false unless frame.dimensions == @picker_frame.dimensions
+    return true if frame.digest == @picker_frame.digest
+    return false unless @recovery_frame
+
+    frame.distance(@picker_frame) < frame.distance(@recovery_frame)
+  end
+
+  def type_text(text)
+    text.each_char do |char|
+      key = if char.match?(/[A-Z]/)
+              "shift-#{char.downcase}"
+            else
+              CHARMAP.fetch(char, char)
+            end
+      send_key key
+      sleep @type_delay
+    end
+  end
+
+  def wait_for(timeout, label)
+    deadline = monotonic + timeout
+    loop do
+      result = yield
+      return result if result
+      raise UnattendedError, "timed out after #{timeout.to_i}s waiting for #{label}" if monotonic >= deadline
+      sleep @poll
+    end
+  end
+
+  def wait_until_still
+    deadline = monotonic + @recovery_still_max
+    previous = @monitor.frame
+    still = 1
+    while monotonic < deadline
+      sleep @poll
+      current = @monitor.frame
+      if current.valid? && current.digest == previous.digest
+        still += 1
+        return current if still >= @recovery_still_frames
+      else
+        previous = current
+        still = 1
+      end
+    end
+    event "recovery screen kept moving; continuing with Terminal navigation"
+    previous
+  end
+
+  def write_result(reboots:, elapsed:)
+    FileUtils.mkdir_p(File.dirname(@output))
+    picker_resolution = @picker_frame && @picker_frame.dimensions
+    recovery_resolution = @recovery_frame && @recovery_frame.dimensions
+    File.write(
+      @output,
+      JSON.pretty_generate(
+        schema: 1,
+        disk_gib: @disk_gib,
+        reboots: reboots,
+        elapsed_seconds: elapsed,
+        picker_resolution: picker_resolution,
+        recovery_resolution: recovery_resolution,
+        events: @events
+      ) + "\n"
+    )
+  end
+end
+
+options = {
+  output: "out/hvf/unattended-install.json",
+  frame: File.join(Dir.tmpdir, "brew-distill-unattended.ppm")
+}
+parser = OptionParser.new do |opts|
+  opts.banner = "usage: unattended-install --monitor SOCKET --disk-gib GIB --command-file FILE [--output FILE] [--frame FILE]"
+  opts.on("--monitor SOCKET") { |value| options[:monitor] = value }
+  opts.on("--disk-gib GIB", Integer) { |value| options[:disk_gib] = value }
+  opts.on("--command-file FILE") { |value| options[:command_file] = value }
+  opts.on("--output FILE") { |value| options[:output] = value }
+  opts.on("--frame FILE") { |value| options[:frame] = value }
+end
+
+begin
+  parser.parse!
+  %i[monitor disk_gib command_file].each do |key|
+    raise UnattendedError, "#{key} is required" unless options[key]
+  end
+  raise UnattendedError, "disk size must be positive" unless options[:disk_gib].positive?
+  command = File.read(options[:command_file]).strip
+  raise UnattendedError, "install command is empty" if command.empty?
+  Driver.new(
+    monitor: options[:monitor],
+    disk_gib: options[:disk_gib],
+    command: command,
+    output: options[:output],
+    frame_path: options[:frame]
+  ).run
+rescue OptionParser::ParseError, Errno::ENOENT, UnattendedError => e
+  warn "unattended-install: #{e.message}"
+  exit 1
+end

@@ -22,29 +22,38 @@ repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 "$repo_dir/scripts/hvf/installer-capabilities" "$installer" "$output_dir" >/dev/null
 capabilities="$output_dir/installer-capabilities.json"
 startosinstall="$installer/Contents/Resources/startosinstall"
-
-jq -e '.options.agreetolicense and .options.nointeraction' "$capabilities" >/dev/null || {
-  printf '%s\n' "bootstrap-guest: installer lacks required headless options" >&2
+plutil_cmd=${DISTILL_PLUTIL:-plutil}
+command -v "$plutil_cmd" >/dev/null 2>&1 || {
+  printf '%s\n' "bootstrap-guest: plutil is required" >&2
   exit 1
 }
 
+has_capability() {
+  [ "$($plutil_cmd -extract "options.$1" raw -o - "$capabilities" 2>/dev/null)" = "true" ]
+}
+
+if ! has_capability agreetolicense || ! has_capability nointeraction; then
+  printf '%s\n' "bootstrap-guest: installer lacks required headless options" >&2
+  exit 1
+fi
+
 set -- --agreetolicense --nointeraction
 if [ "${DISTILL_ERASE_INSTALL:-0}" = "1" ]; then
-  jq -e '.options.eraseinstall' "$capabilities" >/dev/null || {
+  has_capability eraseinstall || {
     printf '%s\n' "bootstrap-guest: installer lacks --eraseinstall" >&2
     exit 1
   }
   set -- "$@" --eraseinstall
 fi
 if [ -n "${DISTILL_INSTALL_VOLUME:-}" ]; then
-  jq -e '.options.volume' "$capabilities" >/dev/null || {
+  has_capability volume || {
     printf '%s\n' "bootstrap-guest: installer lacks --volume" >&2
     exit 1
   }
   set -- "$@" --volume "$DISTILL_INSTALL_VOLUME"
 fi
 if [ -n "${DISTILL_INSTALL_PACKAGE:-}" ]; then
-  jq -e '.options.installpackage' "$capabilities" >/dev/null || {
+  has_capability installpackage || {
     printf '%s\n' "bootstrap-guest: installer lacks --installpackage" >&2
     exit 1
   }

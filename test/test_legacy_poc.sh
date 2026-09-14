@@ -79,11 +79,13 @@ set -eu
 test "$#" -eq 4
 test -f "$2"
 printf '%s\n' bootstrapped > "$2"
+printf '%s\n' '{"schema":1,"qemu_args":["-accel","hvf"],"vm_image":false}' > "$4/.qemu-runtime.json"
 EOF
 cat > "$test_dir/builder" <<'EOF'
 #!/bin/sh
 set -eu
 printf '%s\n' bottle > "$3/$1--1.0.ventura.bottle.tar.gz"
+test "${DISTILL_QEMU_CONFIG:-}" = "$DISTILL_LEGACY_OUTPUT_DIR/hvf/.qemu-runtime.json"
 EOF
 chmod 755 "$test_dir/bin/qemu-system-x86_64" "$test_dir/bin/qemu-img" \
   "$test_dir/bin/softwareupdate" "$test_dir/bootstrap" "$test_dir/builder"

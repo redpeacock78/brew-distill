@@ -15,8 +15,9 @@ test -x "$startosinstall" || {
   printf '%s\n' "installer-capabilities: startosinstall is unavailable: $startosinstall" >&2
   exit 1
 }
-command -v jq >/dev/null 2>&1 || {
-  printf '%s\n' "installer-capabilities: jq is required" >&2
+plutil_cmd=${DISTILL_PLUTIL:-plutil}
+command -v "$plutil_cmd" >/dev/null 2>&1 || {
+  printf '%s\n' "installer-capabilities: plutil is required" >&2
   exit 1
 }
 
@@ -40,17 +41,29 @@ if has_option --eraseinstall; then eraseinstall=1; fi
 if has_option --installpackage; then installpackage=1; fi
 if has_option --volume; then volume=1; fi
 
-jq -n \
-  --arg installer "$installer" \
-  --arg usage "$usage_file" \
-  --argjson usage_status "$usage_status" \
-  --argjson agreetolicense "$agreetolicense" \
-  --argjson nointeraction "$nointeraction" \
-  --argjson eraseinstall "$eraseinstall" \
-  --argjson installpackage "$installpackage" \
-  --argjson volume "$volume" \
-  '{installer:$installer,usage:$usage,usage_status:$usage_status,options:{agreetolicense:($agreetolicense == 1),nointeraction:($nointeraction == 1),eraseinstall:($eraseinstall == 1),installpackage:($installpackage == 1),volume:($volume == 1)}}' \
-  > "$output_dir/installer-capabilities.json"
+metadata_tmp=$(mktemp "${TMPDIR:-/tmp}/brew-distill-installer-capabilities.XXXXXX")
+cleanup() {
+  rm -f "$metadata_tmp"
+}
+trap cleanup EXIT HUP INT TERM
+"$plutil_cmd" -create xml1 "$metadata_tmp"
+"$plutil_cmd" -insert installer -string "$installer" "$metadata_tmp"
+"$plutil_cmd" -insert usage -string "$usage_file" "$metadata_tmp"
+"$plutil_cmd" -insert usage_status -integer "$usage_status" "$metadata_tmp"
+"$plutil_cmd" -insert options -dictionary "$metadata_tmp"
+bool_value() {
+  if [ "$1" -eq 1 ]; then
+    printf '%s\n' true
+  else
+    printf '%s\n' false
+  fi
+}
+"$plutil_cmd" -insert options.agreetolicense -bool "$(bool_value "$agreetolicense")" "$metadata_tmp"
+"$plutil_cmd" -insert options.nointeraction -bool "$(bool_value "$nointeraction")" "$metadata_tmp"
+"$plutil_cmd" -insert options.eraseinstall -bool "$(bool_value "$eraseinstall")" "$metadata_tmp"
+"$plutil_cmd" -insert options.installpackage -bool "$(bool_value "$installpackage")" "$metadata_tmp"
+"$plutil_cmd" -insert options.volume -bool "$(bool_value "$volume")" "$metadata_tmp"
+"$plutil_cmd" -convert json -o "$output_dir/installer-capabilities.json" "$metadata_tmp"
 
 if [ "$usage_status" -ne 0 ]; then
   printf '%s\n' "installer-capabilities: startosinstall --usage failed" >&2

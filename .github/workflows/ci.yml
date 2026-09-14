@@ -36,10 +36,11 @@ jobs:
           ruby -c homebrew-distill
           ruby -c cas-gateway
           ruby -c scripts/hvf/boot-guest
+          ruby -c scripts/hvf/unattended-install
           for file in brew-distill scripts/* scripts/hvf/* test/*.sh; do
             [ -f "$file" ] || continue
             case "$file" in
-              scripts/hvf/boot-guest) continue ;;
+              scripts/hvf/boot-guest|scripts/hvf/unattended-install) continue ;;
             esac
             sh -n "$file"
             shellcheck "$file"

@@ -1,0 +1,464 @@
+#!/bin/sh
+set -eu
+
+export LC_ALL=C
+
+if [ "$#" -ne 4 ]; then
+  printf '%s\n' "usage: bootstrap-legacy INSTALLER.app BASE.qcow2 OPENCORE-DIR HVF-OUTPUT-DIR" >&2
+  exit 2
+fi
+
+installer=$1
+base=$2
+opencore_dir=$3
+output_dir=$4
+repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+guest_user=${DISTILL_GUEST_SSH_USER:-distill}
+target=${DISTILL_GUEST_SSH_TARGET:-$guest_user@127.0.0.1}
+port=${DISTILL_GUEST_SSH_PORT:-2222}
+guest_ssh_cmd="$repo_dir/scripts/hvf/guest-ssh"
+unattended="$repo_dir/scripts/hvf/unattended-install"
+public_key=${DISTILL_GUEST_SSH_PUBLIC_KEY_FILE:-}
+qemu_args=${DISTILL_QEMU_ARGS_JSON:-}
+qemu_code_url=${DISTILL_QEMU_CODE_URL:-}
+qemu_code_sha=${DISTILL_QEMU_CODE_SHA256:-}
+qemu_vars_url=${DISTILL_QEMU_VARS_URL:-}
+qemu_vars_sha=${DISTILL_QEMU_VARS_SHA256:-}
+qemu_bin=${QEMU_SYSTEM_X86_64:-qemu-system-x86_64}
+qemu_img=${QEMU_IMG:-qemu-img}
+plutil_cmd=${DISTILL_PLUTIL:-plutil}
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-legacy-bootstrap.XXXXXX")
+qemu_pid=
+
+case "$guest_user" in
+  ''|*[!A-Za-z0-9._-]*)
+    printf '%s\n' "bootstrap-legacy: invalid guest user: $guest_user" >&2
+    exit 2
+    ;;
+esac
+
+cleanup() {
+  status=$?
+  if [ -n "$qemu_pid" ] && kill -0 "$qemu_pid" 2>/dev/null; then
+    kill -TERM "$qemu_pid" 2>/dev/null || true
+    wait "$qemu_pid" 2>/dev/null || true
+  fi
+  rm -rf "$work_dir"
+  exit "$status"
+}
+trap cleanup EXIT HUP INT TERM
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  printf '%s\n' "bootstrap-legacy: host-side bootstrap requires macOS" >&2
+  exit 1
+fi
+for path in "$installer" "$base" "$opencore_dir" "$public_key"; do
+  test -e "$path" || {
+    printf '%s\n' "bootstrap-legacy: required input is unavailable: $path" >&2
+    exit 1
+  }
+done
+test -x "$guest_ssh_cmd" || {
+  printf '%s\n' "bootstrap-legacy: guest SSH wrapper is unavailable: $guest_ssh_cmd" >&2
+  exit 1
+}
+test -x "$unattended" || {
+  printf '%s\n' "bootstrap-legacy: unattended installer is unavailable: $unattended" >&2
+  exit 1
+}
+test -n "$qemu_args" || {
+  printf '%s\n' "bootstrap-legacy: DISTILL_QEMU_ARGS_JSON is required" >&2
+  exit 1
+}
+command -v "$plutil_cmd" >/dev/null 2>&1 || {
+  printf '%s\n' "bootstrap-legacy: plutil is required" >&2
+  exit 1
+}
+for tool in "$qemu_bin" "$qemu_img" brew curl hdiutil jq openssl pkgbuild shasum; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    printf '%s\n' "bootstrap-legacy: required tool is unavailable: $tool" >&2
+    exit 1
+  }
+done
+mkdir -p "$output_dir"
+printf '%s' "$qemu_args" | jq -e \
+  'type == "array" and length > 0 and all(.[]; type == "string") and (any(.[]; . == "-accel=hvf") or ([range(0; length - 1) as $i | .[$i] == "-accel" and .[$i + 1] == "hvf"] | any))' >/dev/null || {
+  printf '%s\n' "bootstrap-legacy: DISTILL_QEMU_ARGS_JSON must request -accel hvf" >&2
+  exit 2
+}
+
+capabilities="$output_dir/installer-capabilities.json"
+test -f "$capabilities" || {
+  printf '%s\n' "bootstrap-legacy: installer capabilities are missing: $capabilities" >&2
+  exit 1
+}
+capability() {
+  [ "$($plutil_cmd -extract "options.$1" raw -o - "$capabilities" 2>/dev/null)" = "true" ]
+}
+for option in agreetolicense nointeraction volume installpackage; do
+  capability "$option" || {
+    printf '%s\n' "bootstrap-legacy: installer does not expose --$option" >&2
+    exit 1
+  }
+done
+
+base_system="$installer/Contents/SharedSupport/BaseSystem.dmg"
+test -f "$base_system" || {
+  printf '%s\n' "bootstrap-legacy: installer has no BaseSystem.dmg: $base_system" >&2
+  exit 1
+}
+test -f "$opencore_dir/EFI/BOOT/BOOTx64.efi" || {
+  printf '%s\n' "bootstrap-legacy: OpenCore BOOTx64.efi is missing" >&2
+  exit 1
+}
+test -f "$opencore_dir/EFI/OC/OpenCore.efi" || {
+  printf '%s\n' "bootstrap-legacy: OpenCore.efi is missing" >&2
+  exit 1
+}
+test -f "${DISTILL_OPENCORE_DISK:-}" || {
+  printf '%s\n' "bootstrap-legacy: DISTILL_OPENCORE_DISK is required" >&2
+  exit 1
+}
+opencore_disk=$DISTILL_OPENCORE_DISK
+
+virtual_size=$(
+  "$qemu_img" info --output=json "$base" | jq -r '."virtual-size" // empty'
+)
+case "$virtual_size" in
+  ''|*[!0-9]*)
+    printf '%s\n' "bootstrap-legacy: cannot determine base image virtual size" >&2
+    exit 1
+    ;;
+esac
+disk_gib=$(( (virtual_size + 1073741823) / 1073741824 ))
+test "$disk_gib" -gt 0 || {
+  printf '%s\n' "bootstrap-legacy: base image virtual size is zero" >&2
+  exit 1
+}
+
+guest_password=$(openssl rand -hex 24 2>/dev/null || true)
+test -n "$guest_password" || {
+  printf '%s\n' "bootstrap-legacy: openssl could not generate the temporary guest password" >&2
+  exit 1
+}
+
+pkg_root="$work_dir/pkg-root"
+pkg_scripts="$work_dir/pkg-scripts"
+mkdir -p "$pkg_root/usr/local/libexec" "$pkg_root/Library/LaunchDaemons" "$pkg_scripts"
+cp "$public_key" "$pkg_root/usr/local/libexec/brew-distill-guest-key"
+cp "$repo_dir/scripts/hvf/provision-ssh" "$pkg_root/usr/local/libexec/brew-distill-provision-ssh"
+chmod 644 "$pkg_root/usr/local/libexec/brew-distill-guest-key"
+chmod 755 "$pkg_root/usr/local/libexec/brew-distill-provision-ssh"
+cat > "$pkg_root/usr/local/libexec/brew-distill-firstboot" <<EOF
+#!/bin/sh
+set -eu
+
+marker=/var/db/brew-distill-bootstrap.done
+user=$guest_user
+password=$guest_password
+key=/usr/local/libexec/brew-distill-guest-key
+output=/var/tmp/brew-distill
+sudoers=/private/etc/sudoers.d/brew-distill
+
+if ! /usr/bin/id "\$user" >/dev/null 2>&1; then
+  /usr/sbin/sysadminctl -addUser "\$user" -fullName "Distill Builder" -password "\$password" -admin
+fi
+/bin/mkdir -p /private/etc/sudoers.d
+/bin/printf '%s\\n' "\$user ALL=(ALL) NOPASSWD: ALL" > "\$sudoers"
+/bin/chmod 440 "\$sudoers"
+/usr/sbin/visudo -cf "\$sudoers" >/dev/null
+DISTILL_GUEST=1 \\
+DISTILL_GUEST_SSH_USER="\$user" \\
+DISTILL_GUEST_SSH_PUBLIC_KEY_FILE="\$key" \\
+  /usr/local/libexec/brew-distill-provision-ssh "\$output"
+/bin/touch "\$marker"
+EOF
+chmod 755 "$pkg_root/usr/local/libexec/brew-distill-firstboot"
+cat > "$pkg_root/Library/LaunchDaemons/org.brew-distill.firstboot.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.brew-distill.firstboot</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/libexec/brew-distill-firstboot</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/var/log/brew-distill-firstboot.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/brew-distill-firstboot.log</string>
+</dict>
+</plist>
+PLIST
+
+bootstrap_pkg="$work_dir/brew-distill-bootstrap.pkg"
+pkgbuild --root "$pkg_root" --identifier org.brew-distill.bootstrap \
+  --version 1 --install-location / "$bootstrap_pkg" >/dev/null
+
+media_root="$work_dir/install-media-root"
+mkdir -p "$media_root"
+cp -R "$installer"/. "$media_root/"
+cp "$bootstrap_pkg" "$media_root/brew-distill-bootstrap.pkg"
+install_media="$work_dir/install-media.dmg"
+hdiutil create -srcfolder "$media_root" -format UDRW -volname InstallMedia \
+  -ov "$install_media" >/dev/null
+
+recovery_output="$work_dir/recovery"
+hdiutil convert "$base_system" -format UDRW -o "$recovery_output" >/dev/null
+recovery="$recovery_output"
+if [ ! -f "$recovery" ] && [ -f "$recovery.dmg" ]; then
+  recovery="$recovery.dmg"
+fi
+test -s "$recovery" || {
+  printf '%s\n' "bootstrap-legacy: hdiutil did not create recovery image" >&2
+  exit 1
+}
+
+disk_size=$(awk -v gib="$disk_gib" 'BEGIN { printf "%.1f", gib * 1.073741824 }')
+escaped_disk_size=$(printf '%s' "$disk_size" | sed 's/\\./\\\\./')
+command_file="$work_dir/install-command.txt"
+cat > "$command_file" <<EOF
+d=\$(diskutil list | awk '/\\*$escaped_disk_size GB/{print \$NF; exit}') && diskutil eraseDisk APFS MACOS \$d && /Volumes/InstallMedia/Contents/Resources/startosinstall --agreetolicense --volume /Volumes/MACOS --nointeraction --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg
+EOF
+
+monitor="$work_dir/qemu-monitor.sock"
+qemu_code=
+qemu_vars=
+qemu_prefix=$(brew --prefix qemu 2>/dev/null || true)
+for firmware_dir in \
+  "${DISTILL_QEMU_FIRMWARE_DIR:-}" \
+  "$qemu_prefix/share/qemu" "$qemu_prefix/share" \
+  /usr/local/share/qemu /opt/homebrew/share/qemu; do
+  if [ -z "$firmware_dir" ] || [ ! -d "$firmware_dir" ]; then
+    continue
+  fi
+  if [ -z "$qemu_code" ]; then
+    qemu_code=$(find "$firmware_dir" -type f \( -name edk2-x86_64-code.fd -o -name OVMF_CODE.fd \) -print | sed -n '1p')
+  fi
+  if [ -z "$qemu_vars" ]; then
+    qemu_vars=$(find "$firmware_dir" -type f \( -name edk2-x86_64-vars.fd -o -name edk2-i386-vars.fd -o -name OVMF_VARS.fd \) -print | sed -n '1p')
+  fi
+done
+fetch_firmware() {
+  firmware_url=$1
+  firmware_sha=$2
+  firmware_output=$3
+  firmware_label=$4
+  case "$firmware_url" in
+    https://?*) ;;
+    *)
+      printf '%s\n' "bootstrap-legacy: $firmware_label firmware URL must use HTTPS" >&2
+      exit 2
+      ;;
+  esac
+  if [ "${#firmware_sha}" -ne 64 ]; then
+    printf '%s\n' "bootstrap-legacy: $firmware_label firmware SHA256 must be 64 hexadecimal characters" >&2
+    exit 2
+  fi
+  case "$firmware_sha" in
+    ''|*[!0-9a-fA-F]*)
+      printf '%s\n' "bootstrap-legacy: $firmware_label firmware SHA256 must contain only hexadecimal characters" >&2
+      exit 2
+      ;;
+  esac
+  curl -fsSL --retry 3 --connect-timeout 15 \
+    --max-time "${DISTILL_DOWNLOAD_TIMEOUT:-600}" "$firmware_url" -o "$firmware_output"
+  actual_firmware_sha=$(shasum -a 256 "$firmware_output" | awk '{print $1}')
+  expected_firmware_sha=$(printf '%s' "$firmware_sha" | tr '[:upper:]' '[:lower:]')
+  test "$actual_firmware_sha" = "$expected_firmware_sha" || {
+    printf '%s\n' "bootstrap-legacy: $firmware_label firmware SHA256 mismatch" >&2
+    exit 1
+  }
+}
+if printf '%s' "$qemu_args" | jq -e 'any(.[]; contains("{{QEMU_CODE}}"))' >/dev/null && [ -n "$qemu_code_url" ]; then
+  qemu_code="$work_dir/qemu-code.fd"
+  fetch_firmware "$qemu_code_url" "$qemu_code_sha" "$qemu_code" code
+fi
+if printf '%s' "$qemu_args" | jq -e 'any(.[]; contains("{{QEMU_VARS}}"))' >/dev/null && [ -n "$qemu_vars_url" ]; then
+  qemu_vars="$work_dir/qemu-vars.fd"
+  fetch_firmware "$qemu_vars_url" "$qemu_vars_sha" "$qemu_vars" vars
+fi
+if printf '%s' "$qemu_args" | jq -e 'any(.[]; contains("{{QEMU_CODE}}"))' >/dev/null; then
+  test -n "$qemu_code" || {
+    printf '%s\n' "bootstrap-legacy: QEMU code firmware was not found" >&2
+    exit 1
+  }
+fi
+if [ -n "$qemu_code" ]; then
+  code_copy="$output_dir/.qemu-code.fd"
+  cp "$qemu_code" "$code_copy"
+  qemu_code="$code_copy"
+fi
+if printf '%s' "$qemu_args" | jq -e 'any(.[]; contains("{{QEMU_VARS}}"))' >/dev/null; then
+  test -n "$qemu_vars" || {
+    printf '%s\n' "bootstrap-legacy: QEMU vars firmware was not found" >&2
+    exit 1
+  }
+  vars_copy="$output_dir/.qemu-vars.fd"
+  cp "$qemu_vars" "$vars_copy"
+  qemu_vars="$vars_copy"
+fi
+
+runtime_args_json=$(
+  printf '%s' "$qemu_args" | jq \
+    --arg code "$qemu_code" \
+    --arg vars "$qemu_vars" \
+    'map(
+       gsub("\\{\\{QEMU_CODE\\}\\}"; $code) |
+       gsub("\\{\\{QEMU_VARS\\}\\}"; $vars)
+     )'
+)
+printf '%s' "$runtime_args_json" | jq -e \
+  'map(gsub("\\{\\{DISK\\}\\}|\\{\\{OPENCORE\\}\\}|\\{\\{SERIAL_LOG\\}\\}"; "")) | all(.[]; contains("{{") | not)' >/dev/null || {
+  printf '%s\n' "bootstrap-legacy: QEMU args contain an unsupported install-time placeholder" >&2
+  exit 2
+}
+jq -n --argjson qemu_args "$runtime_args_json" \
+  '{schema:1,qemu_args:$qemu_args,vm_image:false}' > "$output_dir/.qemu-runtime.json"
+
+args_json=$(
+  printf '%s' "$qemu_args" | jq \
+    --arg disk "$base" \
+    --arg opencore "$opencore_disk" \
+    --arg recovery "$recovery" \
+    --arg media "$install_media" \
+    --arg monitor "$monitor" \
+    --arg code "$qemu_code" \
+    --arg vars "$qemu_vars" \
+    'map(
+       gsub("\\{\\{DISK\\}\\}"; $disk) |
+       gsub("\\{\\{OPENCORE\\}\\}"; $opencore) |
+       gsub("\\{\\{RECOVERY\\}\\}"; $recovery) |
+       gsub("\\{\\{INSTALL_MEDIA\\}\\}"; $media) |
+       gsub("\\{\\{QEMU_MONITOR\\}\\}"; $monitor) |
+       gsub("\\{\\{QEMU_CODE\\}\\}"; $code) |
+       gsub("\\{\\{QEMU_VARS\\}\\}"; $vars)
+     ) as $args
+     | if any($args[]; contains($opencore)) then $args else $args + [
+         "-drive", ("id=OpenCoreBoot,if=none,format=raw,readonly=on,file=" + $opencore),
+         "-device", "ide-hd,id=OpenCoreDevice,bus=sata.2,drive=OpenCoreBoot"
+       ] end
+     | if any(.[]; contains($recovery)) then . else . + [
+         "-drive", ("id=RecoveryImage,if=none,format=raw,readonly=on,file=" + $recovery),
+         "-device", "ide-hd,id=RecoveryDevice,bus=sata.3,drive=RecoveryImage"
+       ] end
+     | if any(.[]; contains($media)) then . else . + [
+         "-drive", ("id=InstallMedia,if=none,format=raw,readonly=on,file=" + $media),
+         "-device", "ide-hd,id=InstallMediaDevice,bus=sata.4,drive=InstallMedia"
+       ] end
+     | if any(.[]; contains($disk)) then . else . + [
+         "-drive", ("id=MacHDD,if=none,format=qcow2,file=" + $disk),
+         "-device", "ide-hd,id=MacHDDDevice,bus=sata.5,drive=MacHDD"
+       ] end
+     | if any(.[]; . == "-monitor" or startswith("-monitor=")) then . else . + [
+         "-monitor", ("unix:" + $monitor + ",server=on,wait=off")
+       ] end'
+)
+
+DISTILL_QEMU_ARGS_JSON="$args_json" \
+  DISTILL_OPENCORE_DISK="$opencore_disk" \
+  "$repo_dir/scripts/hvf/boot-guest" "$base" "$output_dir" \
+  > "$output_dir/qemu.log" 2>&1 &
+qemu_pid=$!
+
+"$unattended" --monitor "$monitor" --disk-gib "$disk_gib" \
+  --command-file "$command_file" --output "$output_dir/unattended-install.json" \
+  --frame "$work_dir/frame.ppm" \
+  > "$output_dir/unattended-install.log" 2>&1
+
+DISTILL_GUEST_SSH_CONNECT_TIMEOUT=5 \
+  "$repo_dir/scripts/hvf/wait-ssh" "$target" "$port" \
+  "${DISTILL_GUEST_SSH_TIMEOUT:-1200}"
+guest_ssh() {
+  "$guest_ssh_cmd" ssh "$target" "$port" "$@"
+}
+scp_guest() {
+  "$guest_ssh_cmd" scp "$port" "$@"
+}
+scp_guest "$target:/var/tmp/brew-distill/ssh-ready.json" "$output_dir/ssh-ready.json"
+guest_ssh sudo -n true
+
+homebrew_installer=${DISTILL_HOMEBREW_INSTALLER:-}
+if [ -n "$homebrew_installer" ]; then
+  test -f "$homebrew_installer" || {
+    printf '%s\n' "bootstrap-legacy: Homebrew installer does not exist: $homebrew_installer" >&2
+    exit 1
+  }
+else
+  homebrew_url=${DISTILL_HOMEBREW_INSTALLER_URL:-}
+  homebrew_sha=${DISTILL_HOMEBREW_INSTALLER_SHA256:-}
+  test -n "$homebrew_url" || {
+    printf '%s\n' "bootstrap-legacy: provide DISTILL_HOMEBREW_INSTALLER or installer URL/SHA" >&2
+    exit 1
+  }
+  case "$homebrew_url" in
+    https://?*) ;;
+    *)
+      printf '%s\n' "bootstrap-legacy: Homebrew installer URL must use HTTPS" >&2
+      exit 2
+      ;;
+  esac
+  if [ "${#homebrew_sha}" -ne 64 ]; then
+    printf '%s\n' "bootstrap-legacy: Homebrew installer SHA256 must be 64 hexadecimal characters" >&2
+    exit 2
+  fi
+  case "$homebrew_sha" in
+    ''|*[!0-9a-fA-F]*)
+      printf '%s\n' "bootstrap-legacy: Homebrew installer SHA256 must contain only hexadecimal characters" >&2
+      exit 2
+      ;;
+  esac
+  homebrew_installer="$work_dir/homebrew-install.sh"
+  curl -fsSL --retry 3 --connect-timeout 15 \
+    --max-time "${DISTILL_DOWNLOAD_TIMEOUT:-600}" "$homebrew_url" \
+    -o "$homebrew_installer"
+  actual_homebrew_sha=$(shasum -a 256 "$homebrew_installer" | awk '{print $1}')
+  expected_homebrew_sha=$(printf '%s' "$homebrew_sha" | tr '[:upper:]' '[:lower:]')
+  test "$actual_homebrew_sha" = "$expected_homebrew_sha" || {
+    printf '%s\n' "bootstrap-legacy: Homebrew installer SHA256 mismatch" >&2
+    exit 1
+  }
+fi
+
+scp_guest "$homebrew_installer" "$target:/var/tmp/brew-distill/homebrew-install.sh"
+guest_ssh env HOMEBREW_NO_AUTO_UPDATE=1 NONINTERACTIVE=1 \
+  /bin/bash /var/tmp/brew-distill/homebrew-install.sh \
+  > "$output_dir/homebrew-install.log" 2>&1
+
+scp_guest "$repo_dir/scripts/hvf/bootstrap-homebrew" \
+  "$target:/var/tmp/brew-distill/bootstrap-homebrew"
+guest_ssh env DISTILL_GUEST=1 \
+  /bin/sh /var/tmp/brew-distill/bootstrap-homebrew /var/tmp/brew-distill/homebrew \
+  > "$output_dir/homebrew-bootstrap.log" 2>&1
+for file in brew-version.txt brew-config.txt brew-doctor.txt; do
+  scp_guest "$target:/var/tmp/brew-distill/homebrew/$file" "$output_dir/$file"
+done
+
+guest_ssh sudo -n launchctl bootout system/org.brew-distill.firstboot >/dev/null 2>&1 || true
+guest_ssh sudo -n rm -f \
+  /Library/LaunchDaemons/org.brew-distill.firstboot.plist \
+  /usr/local/libexec/brew-distill-firstboot \
+  /usr/local/libexec/brew-distill-guest-key \
+  /usr/local/libexec/brew-distill-provision-ssh \
+  /var/tmp/brew-distill/homebrew-install.sh \
+  /private/etc/sudoers.d/brew-distill \
+  /var/db/brew-distill-bootstrap.done
+
+installer_sha=$(shasum -a 256 "$base_system" | awk '{print $1}')
+media_sha=$(shasum -a 256 "$install_media" | awk '{print $1}')
+homebrew_sha=$(shasum -a 256 "$homebrew_installer" | awk '{print $1}')
+jq -n \
+  --arg installer "$installer" \
+  --arg installer_sha "$installer_sha" \
+  --arg recovery "$recovery" \
+  --arg media_sha "$media_sha" \
+  --arg homebrew_sha "$homebrew_sha" \
+  --arg target "$target" \
+  --argjson disk_gib "$disk_gib" \
+  '{schema:1,installer:$installer,base_system_sha256:$installer_sha,recovery_image:$recovery,install_media_sha256:$media_sha,homebrew_installer_sha256:$homebrew_sha,target:$target,disk_gib:$disk_gib,qemu_runtime_config:".qemu-runtime.json",vm_image:false}' \
+  > "$output_dir/legacy-bootstrap.json"
+printf '%s\n' "Legacy guest bootstrap complete"

@@ -24,6 +24,7 @@ user=${DISTILL_GUEST_SSH_USER:-distill}
 key_file=${DISTILL_GUEST_SSH_PUBLIC_KEY_FILE:-}
 key_text=${DISTILL_GUEST_SSH_PUBLIC_KEY:-}
 output_dir=${1:-out/hvf}
+plutil_cmd=${DISTILL_PLUTIL:-plutil}
 
 case "$user" in
   ''|*[!A-Za-z0-9._-]*)
@@ -32,7 +33,7 @@ case "$user" in
     ;;
 esac
 
-for tool in dscl id install jq ssh-keygen systemsetup; do
+for tool in dscl id install "$plutil_cmd" ssh-keygen systemsetup; do
   command -v "$tool" >/dev/null 2>&1 || {
     printf '%s\n' "provision-ssh: required tool is unavailable: $tool" >&2
     exit 1
@@ -49,6 +50,16 @@ if [ -n "$key_file" ] && [ -n "$key_text" ]; then
 fi
 
 temporary_key=
+metadata_tmp=
+cleanup() {
+  if [ -n "$temporary_key" ]; then
+    rm -f "$temporary_key"
+  fi
+  if [ -n "$metadata_tmp" ]; then
+    rm -f "$metadata_tmp"
+  fi
+}
+trap cleanup EXIT HUP INT TERM
 if [ -n "$key_file" ]; then
   test -f "$key_file" || {
     printf '%s\n' "provision-ssh: public key file does not exist: $key_file" >&2
@@ -56,7 +67,6 @@ if [ -n "$key_file" ]; then
   }
 elif [ -n "$key_text" ]; then
   temporary_key=$(mktemp "${TMPDIR:-/tmp}/brew-distill-ssh-key.XXXXXX")
-  trap 'rm -f "$temporary_key"' EXIT HUP INT TERM
   printf '%s\n' "$key_text" > "$temporary_key"
   key_file=$temporary_key
 else
@@ -94,10 +104,12 @@ chmod 600 "$authorized_keys"
 
 systemsetup -setremotelogin on >/dev/null
 mkdir -p "$output_dir"
-jq -n \
-  --arg user "$user" \
-  --arg home "$home" \
-  --arg fingerprint "$fingerprint" \
-  '{schema:1,user:$user,home:$home,remote_login:true,public_key_fingerprint:$fingerprint}' \
-  > "$output_dir/ssh-ready.json"
+metadata_tmp=$(mktemp "${TMPDIR:-/tmp}/brew-distill-ssh-ready.XXXXXX")
+"$plutil_cmd" -create xml1 "$metadata_tmp"
+"$plutil_cmd" -insert schema -integer 1 "$metadata_tmp"
+"$plutil_cmd" -insert user -string "$user" "$metadata_tmp"
+"$plutil_cmd" -insert home -string "$home" "$metadata_tmp"
+"$plutil_cmd" -insert remote_login -bool true "$metadata_tmp"
+"$plutil_cmd" -insert public_key_fingerprint -string "$fingerprint" "$metadata_tmp"
+"$plutil_cmd" -convert json -o "$output_dir/ssh-ready.json" "$metadata_tmp"
 printf '%s\n' "SSH ready: $user"

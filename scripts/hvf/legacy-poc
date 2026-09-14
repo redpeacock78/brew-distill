@@ -103,6 +103,15 @@ test -f "$base" || {
   printf '%s\n' "legacy-poc: bootstrap hook did not return a base image" >&2
   exit 1
 }
+if [ -f "$hvf_dir/.qemu-runtime.json" ]; then
+  jq -e \
+    '.schema == 1 and (.qemu_args | type == "array" and length > 0 and all(.[]; type == "string")) and (.qemu_args | (any(.[]; . == "-accel=hvf") or ([range(0; length - 1) as $i | .[$i] == "-accel" and .[$i + 1] == "hvf"] | any)))' \
+    "$hvf_dir/.qemu-runtime.json" >/dev/null || {
+    printf '%s\n' "legacy-poc: bootstrap returned invalid runtime QEMU configuration" >&2
+    exit 1
+  }
+  export DISTILL_QEMU_CONFIG="$hvf_dir/.qemu-runtime.json"
+fi
 "$repo_dir/scripts/hvf/freeze-base" "$base" "$hvf_dir"
 
 cas_dir=${DISTILL_CAS_DIR:-$output_dir/cas}

@@ -26,6 +26,9 @@ find "$output_dir" -type f \( \
   -o -name 'startosinstall-usage.txt' \
   -o -name 'installer.json' -o -name 'installer-capabilities.json' \
   -o -name 'opencore.json' -o -name 'opencore-disk.json' -o -name 'ssh-ready.json' \
+  -o -name 'legacy-bootstrap.json' -o -name 'unattended-install.json' \
+  -o -name 'unattended-install.log' -o -name 'homebrew-install.log' \
+  -o -name 'homebrew-bootstrap.log' -o -name 'brew-version.txt' \
   -o -name 'brew-config.txt' -o -name 'brew-doctor.txt' \
   -o -name '*.linkage.txt' -o -name '*.verify-linkage.txt' \
   -o -name 'timings.json' -o -name 'batch-results.json' \

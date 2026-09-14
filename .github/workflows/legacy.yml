@@ -39,6 +39,12 @@ jobs:
       DISTILL_OPENCORE_DIR: ${{ vars.DISTILL_OPENCORE_DIR }}
       DISTILL_OPENCORE_ARCHIVE_URL: ${{ vars.DISTILL_OPENCORE_ARCHIVE_URL }}
       DISTILL_OPENCORE_ARCHIVE_SHA256: ${{ vars.DISTILL_OPENCORE_ARCHIVE_SHA256 }}
+      DISTILL_HOMEBREW_INSTALLER_URL: ${{ vars.DISTILL_HOMEBREW_INSTALLER_URL }}
+      DISTILL_HOMEBREW_INSTALLER_SHA256: ${{ vars.DISTILL_HOMEBREW_INSTALLER_SHA256 }}
+      DISTILL_QEMU_CODE_URL: ${{ vars.DISTILL_QEMU_CODE_URL }}
+      DISTILL_QEMU_CODE_SHA256: ${{ vars.DISTILL_QEMU_CODE_SHA256 }}
+      DISTILL_QEMU_VARS_URL: ${{ vars.DISTILL_QEMU_VARS_URL }}
+      DISTILL_QEMU_VARS_SHA256: ${{ vars.DISTILL_QEMU_VARS_SHA256 }}
       DISTILL_RELEASE_BUILD: "1"
       DISTILL_VERIFY_AFTER_BUILD: "1"
       DISTILL_OPENCORE_STRICT: "1"
@@ -108,6 +114,23 @@ jobs:
             echo "Legacy requires the DISTILL_ARTIFACT_DOMAIN repository variable" >&2
             exit 1
           }
+          case "$DISTILL_HOMEBREW_INSTALLER_URL" in
+            https://?*) ;;
+            *)
+              echo "Legacy requires an HTTPS DISTILL_HOMEBREW_INSTALLER_URL repository variable" >&2
+              exit 1
+              ;;
+          esac
+          if [ "${#DISTILL_HOMEBREW_INSTALLER_SHA256}" -ne 64 ]; then
+            echo "Legacy requires a 64-hex DISTILL_HOMEBREW_INSTALLER_SHA256 repository variable" >&2
+            exit 1
+          fi
+          case "$DISTILL_HOMEBREW_INSTALLER_SHA256" in
+            *[!0-9a-fA-F]*)
+              echo "Legacy requires a 64-hex DISTILL_HOMEBREW_INSTALLER_SHA256 repository variable" >&2
+              exit 1
+              ;;
+          esac
           test -n "$DISTILL_LEGACY_BOOTSTRAP" || {
             echo "Legacy requires the DISTILL_LEGACY_BOOTSTRAP repository variable" >&2
             exit 1
@@ -134,6 +157,26 @@ jobs:
             echo "DISTILL_QEMU_ARGS_JSON must request -accel hvf" >&2
             exit 1
           }
+          if printf '%s' "$DISTILL_QEMU_ARGS_JSON" | jq -e 'any(.[]; contains("{{QEMU_CODE}}"))' >/dev/null; then
+            test -n "$DISTILL_QEMU_CODE_URL" || {
+              echo "Legacy requires DISTILL_QEMU_CODE_URL when QEMU_CODE is a placeholder" >&2
+              exit 1
+            }
+            test "${#DISTILL_QEMU_CODE_SHA256}" -eq 64 || {
+              echo "Legacy requires a 64-hex DISTILL_QEMU_CODE_SHA256" >&2
+              exit 1
+            }
+          fi
+          if printf '%s' "$DISTILL_QEMU_ARGS_JSON" | jq -e 'any(.[]; contains("{{QEMU_VARS}}"))' >/dev/null; then
+            test -n "$DISTILL_QEMU_VARS_URL" || {
+              echo "Legacy requires DISTILL_QEMU_VARS_URL when QEMU_VARS is a placeholder" >&2
+              exit 1
+            }
+            test "${#DISTILL_QEMU_VARS_SHA256}" -eq 64 || {
+              echo "Legacy requires a 64-hex DISTILL_QEMU_VARS_SHA256" >&2
+              exit 1
+            }
+          fi
           test -f "$DISTILL_GUEST_SSH_IDENTITY" || {
             echo "Legacy guest SSH identity was not prepared" >&2
             exit 1
@@ -195,6 +238,14 @@ jobs:
             out/hvf/base-check.txt
             out/hvf/opencore-disk.json
             out/hvf/ssh-ready.json
+            out/hvf/legacy-bootstrap.json
+            out/hvf/unattended-install.json
+            out/hvf/unattended-install.log
+            out/hvf/homebrew-install.log
+            out/hvf/homebrew-bootstrap.log
+            out/hvf/brew-version.txt
+            out/hvf/brew-config.txt
+            out/hvf/brew-doctor.txt
             out/hvf/guest-console.log
             out/hvf/qemu.log
             out/hvf/opencore.log
