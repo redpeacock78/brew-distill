@@ -40,7 +40,7 @@ sha=$(shasum -a 256 "$test_dir/csound--1.0.ventura.bottle.tar.gz" | awk '{print 
 
 test -s "$test_dir/out/csound.smoke.wav"
 test -s "$test_dir/out/native-verification.txt"
-grep -F -- 'install --formula ' "$test_dir/brew.log" >/dev/null
+grep -Fqx -- 'install --formula ./csound--1.0.ventura.bottle.tar.gz' "$test_dir/brew.log"
 
 if PATH="$test_dir/bin:$PATH" \
   BREW_LOG="$test_dir/retry.log" \
