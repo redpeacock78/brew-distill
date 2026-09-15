@@ -150,6 +150,28 @@ test ! -e "$test_dir/cache-helper.log"
 jq -e '.phases.catalog_resolve >= 0 and .phases.installer_download >= 0' \
   "$test_dir/cache-out/phase-timings.json" >/dev/null
 
+mkdir -p "$test_dir/invalidate-applications" "$test_dir/invalidate-out"
+cp "$test_dir/out/installer-catalog-cache.json" "$test_dir/invalidate-cache.json"
+if PATH="$test_dir/bin:$PATH" \
+  SOFTWAREUPDATE_LOG="$test_dir/softwareupdate.log" \
+  DISTILL_SOFTWAREUPDATE="$test_dir/bin/softwareupdate" \
+  DISTILL_INSTALLER_ROOT="$test_dir/invalidate-applications" \
+  DISTILL_INSTALLER_PACKAGE_ROOT="$test_dir/no-packages" \
+  DISTILL_INSTALLER_SOFTWAREUPDATE_FALLBACK=0 \
+  DISTILL_INSTALLER_CATALOG_PRIMARY=1 \
+  DISTILL_INSTALLER_CATALOG_CACHE="$test_dir/invalidate-cache.json" \
+  DISTILL_INSTALLER_CATALOG_HELPER="$test_dir/catalog-helper.py" \
+  DISTILL_INSTALLER_CMD="$test_dir/installer" \
+  FAKE_INSTALLER_ROOT="$test_dir/invalidate-applications" \
+  CATALOG_HELPER_LOG="$test_dir/invalidate-helper.log" \
+  ARIA2_FAIL=1 CURL_FAIL=1 \
+  "$repo_dir/scripts/hvf/fetch-installer" 13.7.8 "$test_dir/invalidate-out" >/dev/null 2>&1; then
+  printf '%s\n' 'fetch-installer accepted a failed cached URL' >&2
+  exit 1
+fi
+test ! -e "$test_dir/invalidate-cache.json"
+test -s "$test_dir/invalidate-helper.log"
+
 mkdir -p "$test_dir/curl-applications" "$test_dir/curl-out"
 PATH="$test_dir/bin:$PATH" \
   SOFTWAREUPDATE_LOG="$test_dir/softwareupdate.log" \
