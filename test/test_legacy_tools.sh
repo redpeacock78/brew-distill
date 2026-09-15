@@ -17,6 +17,46 @@ grep -F -- 'public_key_fingerprint' "$repo_dir/scripts/hvf/bootstrap-legacy" >/d
 grep -F -- 'firstboot.log' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 python3 -c 'import pathlib, sys; path = pathlib.Path(sys.argv[1]); compile(path.read_text(encoding="utf-8"), str(path), "exec")' \
   "$repo_dir/scripts/hvf/fetch-recovery"
+DISTILL_RECOVERY_REQUEST_RETRIES=2 DISTILL_RECOVERY_REQUEST_TIMEOUT=1 \
+  python3 - "$repo_dir/scripts/hvf/fetch-recovery" <<'PY'
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import sys
+
+loader = SourceFileLoader("fetch_recovery", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+module = importlib.util.module_from_spec(spec)
+loader.exec_module(module)
+
+class Response:
+    headers = {"Content-Type": "text/plain"}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self):
+        return b"ok"
+
+calls = 0
+
+def flaky_urlopen(_request, timeout):
+    global calls
+    calls += 1
+    assert timeout == 1.0
+    if calls == 1:
+        raise TimeoutError("simulated timeout")
+    return Response()
+
+module.urllib.request.urlopen = flaky_urlopen
+module.time.sleep = lambda _seconds: None
+headers, body = module.request("https://example.test", headers={})
+assert calls == 2
+assert headers["Content-Type"] == "text/plain"
+assert body == b"ok"
+PY
 DISTILL_DISK_CANDIDATES='' DISTILL_MIN_FREE_GIB=0 \
   "$repo_dir/scripts/hvf/reclaim-disk" "$test_dir/out" report >/dev/null
 jq -e '.mode == "report" and .paths == []' "$test_dir/out/reclaim.json" >/dev/null
