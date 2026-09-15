@@ -140,6 +140,7 @@ test -s "$test_dir/screen-first-reboot.ppm"
 awk 'NR == 2 { print }' "$test_dir/screen-recovery.ppm" | grep -Fx '32 18'
 test -s "$test_dir/unattended-frames.jsonl"
 jq -s -e 'all(.[]; .uefi_shell_like == false)' "$test_dir/unattended-frames.jsonl" >/dev/null
+jq -s -e 'any(.[]; .recovery_ui_like == true)' "$test_dir/unattended-frames.jsonl" >/dev/null
 grep -Fqx -- 'sendkey ctrl-f2' "$commands"
 grep -Fqx -- 'sendkey e' "$commands"
 grep -Fqx -- 'sendkey ret' "$commands"

@@ -417,6 +417,7 @@ end
       picker_distance: finite_metric(picker_distance),
       recovery_distance: finite_metric(recovery_distance),
       picker_like: picker_like?(frame),
+      recovery_ui_like: frame.recovery_ui_like?,
       uefi_shell_like: frame.uefi_shell_like?
     }
     File.open(@frame_log, "a") { |stream| stream.puts(JSON.generate(record)) }
