@@ -211,7 +211,12 @@ class Driver
     @recovery_still_frames = Integer(env_number("DISTILL_UNATTENDED_RECOVERY_STILL_FRAMES", 3))
     @recovery_still_poll = env_number("DISTILL_UNATTENDED_RECOVERY_STILL_POLL", ENV.fetch("DISTILL_UNATTENDED_POLL", "6"))
     @picker_settle = env_number("DISTILL_UNATTENDED_PICKER_SETTLE", 2)
-    @terminal_wait = env_number("DISTILL_UNATTENDED_TERMINAL_WAIT", 10)
+    @terminal_timeout = env_number("DISTILL_UNATTENDED_TERMINAL_TIMEOUT", 30)
+    @terminal_settle = env_number(
+      "DISTILL_UNATTENDED_TERMINAL_SETTLE",
+      ENV.fetch("DISTILL_UNATTENDED_TERMINAL_WAIT", "3")
+    )
+    @terminal_probe_delay = env_number("DISTILL_UNATTENDED_TERMINAL_PROBE_DELAY", 0.5)
     @install_reboot_timeout = env_number("DISTILL_UNATTENDED_INSTALL_REBOOT_TIMEOUT", 1800)
     @install_reboot_grace = env_number("DISTILL_UNATTENDED_INSTALL_REBOOT_GRACE", 5)
     @frame_interval = env_number("DISTILL_UNATTENDED_FRAME_INTERVAL", 60)
@@ -221,7 +226,8 @@ class Driver
     @total_budget = env_number("DISTILL_UNATTENDED_TOTAL_BUDGET", 10_800)
     @poll = env_number("DISTILL_UNATTENDED_POLL", 6)
     @key_delay = env_number("DISTILL_UNATTENDED_KEY_DELAY", 0.4)
-    @type_delay = env_number("DISTILL_UNATTENDED_TYPE_DELAY", 0.12)
+    @type_delay = env_number("DISTILL_UNATTENDED_TYPE_DELAY", 0.2)
+    @type_settle = env_number("DISTILL_UNATTENDED_TYPE_SETTLE", 2)
     @picker_frame = nil
     @recovery_frame = nil
     @guest_boot_seconds = nil
@@ -268,10 +274,17 @@ def run
       send_key key
       sleep @key_delay
     end
-    sleep @terminal_wait
+    wait_for_terminal
+    sleep @terminal_settle if @terminal_settle.positive?
+    send_key "spc"
+    sleep @terminal_probe_delay
+    send_key "backspace"
+    sleep @terminal_probe_delay
+    capture_and_save("screen-terminal-ready.ppm")
     capture_and_save("screen-before-command.ppm")
     event "typing the erase and startosinstall command"
     type_text @command
+    sleep @type_settle
     capture_and_save("screen-after-typing.ppm")
     sleep 1
     send_key "ret"
@@ -395,6 +408,13 @@ end
     frame
   end
 
+  def wait_for_terminal
+    wait_for(@terminal_timeout, "the recovery Terminal") do
+      frame = capture_frame
+      frame.visible && frame.digest != @recovery_frame.digest ? frame : nil
+    end
+  end
+
   def save_current_frame(name)
     return unless File.file?(@frame_path)
 
@@ -452,8 +472,9 @@ end
         save_current_frame("screen-first-reboot.ppm")
         return frame
       end
-      raise UnattendedError, "timed out after #{@install_reboot_timeout.to_i}s waiting for the installer first reboot" if monotonic >= deadline
-      sleep [@poll, deadline - monotonic].min
+      remaining = deadline - monotonic
+      raise UnattendedError, "timed out after #{@install_reboot_timeout.to_i}s waiting for the installer first reboot" if remaining <= 0
+      sleep [@poll, remaining].min if @poll.positive?
     end
   rescue UnattendedError
     save_current_frame("screen-first-reboot-timeout.ppm")

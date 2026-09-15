@@ -20,7 +20,7 @@ frame="$test_dir/frame.ppm"
 command_file="$test_dir/install-command.txt"
 output="$test_dir/unattended.json"
 cat > "$command_file" <<'EOF'
-echo ok
+/Volumes/InstallMedia/brew-distill-install
 EOF
 
 cat > "$test_dir/fake-monitor.rb" <<'RUBY'
@@ -79,7 +79,7 @@ File.open(command_log, "w") do |log|
                    write_uefi_shell_frame(Regexp.last_match(1), 64, 36)
                  else
                    case screendumps
-                   when 1, 8..11
+                   when 1, 8..100
                      write_frame(Regexp.last_match(1), 64, 36, 220, 220, 220)
                    when 2..4
                      write_boot_progress_frame(Regexp.last_match(1), 64, 36)
@@ -115,6 +115,9 @@ if ! DISTILL_UNATTENDED_FRAME_WAIT=0 \
   DISTILL_UNATTENDED_RECOVERY_STILL_MAX=1 \
   DISTILL_UNATTENDED_RECOVERY_STILL_FRAMES=2 \
   DISTILL_UNATTENDED_TERMINAL_WAIT=0 \
+  DISTILL_UNATTENDED_TERMINAL_TIMEOUT=10 \
+  DISTILL_UNATTENDED_TERMINAL_PROBE_DELAY=0 \
+  DISTILL_UNATTENDED_TYPE_SETTLE=0 \
   DISTILL_UNATTENDED_INSTALL_REBOOT_GRACE=0 \
   DISTILL_UNATTENDED_INSTALL_REBOOT_TIMEOUT=10 \
   DISTILL_UNATTENDED_DONE_QUIET=0 \
@@ -135,6 +138,7 @@ fi
 jq -e '.schema == 1 and .status == "passed" and .guest_install_seconds >= 0 and .install_command_submitted == true and .reboots == 1 and any(.events[]; contains("install finished"))' \
   "$output" >/dev/null
 test -s "$test_dir/screen-before-command.ppm"
+test -s "$test_dir/screen-terminal-ready.ppm"
 test -s "$test_dir/screen-after-typing.ppm"
 test -s "$test_dir/screen-first-reboot.ppm"
 awk 'NR == 2 { print }' "$test_dir/screen-recovery.ppm" | grep -Fx '32 18'
@@ -142,7 +146,11 @@ test -s "$test_dir/unattended-frames.jsonl"
 jq -s -e 'all(.[]; .uefi_shell_like == false)' "$test_dir/unattended-frames.jsonl" >/dev/null
 jq -s -e 'any(.[]; .recovery_ui_like == true)' "$test_dir/unattended-frames.jsonl" >/dev/null
 grep -Fqx -- 'sendkey ctrl-f2' "$commands"
-grep -Fqx -- 'sendkey e' "$commands"
+grep -Fqx -- 'sendkey spc' "$commands"
+grep -Fqx -- 'sendkey backspace' "$commands"
+grep -Fqx -- 'sendkey shift-v' "$commands"
+grep -Fqx -- 'sendkey shift-i' "$commands"
+grep -Fqx -- 'sendkey shift-m' "$commands"
 grep -Fqx -- 'sendkey ret' "$commands"
 
 kill "$server_pid" 2>/dev/null || true
