@@ -950,9 +950,12 @@ module BrewDistill
       return 0 unless parse_common(options, @argv)
       raise Error, "doctor accepts no positional arguments" unless @argv.empty?
       brew = Homebrew.new(options[:brew])
-      raise Error, "Homebrew executable is unavailable: #{options[:brew]}" unless brew.available?
+      brew_available = brew.available?
+      if !brew_available && options[:registry].nil?
+        raise Error, "Homebrew executable is unavailable: #{options[:brew]}"
+      end
 
-      @out.puts "OK brew=#{options[:brew]}"
+      @out.puts "OK brew=#{options[:brew]}" if brew_available
       @out.puts "OK platform=#{JSON.generate(Platform.detect.data)}"
       if options[:registry]
         Registry.new(options[:registry])

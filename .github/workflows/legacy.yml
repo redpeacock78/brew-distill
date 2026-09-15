@@ -237,6 +237,7 @@ jobs:
             out/hvf/installer-capabilities.json
             out/hvf/startosinstall-usage.txt
             out/hvf/full-installers.txt
+            out/hvf/installer-package.log
             out/hvf/base.json
             out/hvf/base-check.txt
             out/hvf/opencore-disk.json

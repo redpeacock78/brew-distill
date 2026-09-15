@@ -99,10 +99,15 @@ $HOME/Applications"
     installer_location="/Applications or $HOME/Applications"
   fi
 fi
-package_roots=/Library/Updates
-if [ -n "${HOME:-}" ] && [ "$HOME/Library/Updates" != "/Library/Updates" ]; then
-  package_roots="$package_roots
-$HOME/Library/Updates"
+package_roots=${DISTILL_INSTALLER_PACKAGE_ROOT:-/Library/Updates}
+package_roots="$package_roots
+/System/Library/AssetsV2
+/private/var/folders"
+if [ -n "${HOME:-}" ]; then
+  for package_root in "$HOME/Library/Updates" "$HOME/Library/Caches"; do
+    package_roots="$package_roots
+$package_root"
+  done
 fi
 find_installer() {
   while IFS= read -r search_root; do
@@ -124,21 +129,6 @@ $installer_roots
 EOF
   return 1
 }
-find_installer_anywhere() {
-  while IFS= read -r candidate; do
-    candidate_version=$(
-      run_privileged "$plutil_cmd" -extract CFBundleShortVersionString raw -o - \
-        "$candidate/Contents/Info.plist" 2>/dev/null || true
-    )
-    if [ "$candidate_version" = "$version" ]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done <<EOF
-$(run_privileged find / -xdev \( -type d -o -type l \) -name 'Install macOS *.app' -print 2>/dev/null | sort)
-EOF
-  return 1
-}
 find_installer_package() {
   while IFS= read -r search_root; do
     [ -d "$search_root" ] || continue
@@ -146,12 +136,33 @@ find_installer_package() {
       printf '%s\n' "$package"
       return 0
     done <<EOF
-$(run_privileged find "$search_root" -type f -name 'InstallAssistant*.pkg' -print 2>/dev/null | sort)
+$(run_privileged find "$search_root" -maxdepth 8 -type f -name 'InstallAssistant*.pkg' -print 2>/dev/null | sort)
 EOF
   done <<EOF
 $package_roots
 EOF
   return 1
+}
+installer_cmd=${DISTILL_INSTALLER_CMD:-/usr/sbin/installer}
+installer_package_log="$output_dir/installer-package.log"
+printf '%s\n' "no cached InstallAssistant package was extracted" > "$installer_package_log"
+attempted_package=
+extract_cached_installer() {
+  installer_package=$(find_installer_package || true)
+  [ -n "$installer_package" ] || return 1
+  [ "$installer_package" != "$attempted_package" ] || return 1
+  attempted_package=$installer_package
+  printf '%s\n' "fetch-installer: extracting installer app from $installer_package" >&2
+  if run_privileged "$installer_cmd" -pkg "$installer_package" -target / \
+    > "$installer_package_log" 2>&1; then
+    printf '%s\n' "extracted $installer_package" >> "$installer_package_log"
+  else
+    installer_status=$?
+    printf '%s\n' "installer exit status: $installer_status" >> "$installer_package_log"
+    return "$installer_status"
+  fi
+  installer=$(find_installer || true)
+  [ -n "$installer" ]
 }
 installer=
 discovery_timeout=${DISTILL_INSTALLER_DISCOVERY_TIMEOUT:-300}
@@ -172,19 +183,12 @@ discovery_started=$(date +%s)
 printf '%s\n' "fetch-installer: waiting up to ${discovery_timeout}s for the installer app" >&2
 installer=$(find_installer || true)
 if [ -z "$installer" ]; then
-  printf '%s\n' "fetch-installer: searching the full local filesystem for the installer app" >&2
-  installer=$(find_installer_anywhere || true)
-fi
-if [ -z "$installer" ]; then
-  installer_package=$(find_installer_package || true)
-  if [ -n "$installer_package" ]; then
-    printf '%s\n' "fetch-installer: extracting installer app from $installer_package" >&2
-    run_privileged /usr/sbin/installer -pkg "$installer_package" -target / >/dev/null
-    installer=$(find_installer || true)
-  fi
+  extract_cached_installer || true
 fi
 while [ -z "$installer" ]; do
   installer=$(find_installer || true)
+  [ -n "$installer" ] && break
+  extract_cached_installer || true
   [ -n "$installer" ] && break
   elapsed=$(( $(date +%s) - discovery_started ))
   [ "$elapsed" -ge "$discovery_timeout" ] && break
