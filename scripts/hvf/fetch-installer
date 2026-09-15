@@ -51,6 +51,13 @@ fetch_full_installer() {
     "$softwareupdate_cmd" "$@"
   fi
 }
+run_privileged() {
+  if [ "${DISTILL_SOFTWAREUPDATE_SUDO:-0}" = "1" ]; then
+    sudo -n "$@"
+  else
+    "$@"
+  fi
+}
 fetch_attempts=${DISTILL_SOFTWAREUPDATE_ATTEMPTS:-1}
 case "$fetch_attempts" in
   ''|*[!0-9]*|0)
@@ -97,7 +104,7 @@ find_installer() {
     [ -d "$search_root" ] || continue
     while IFS= read -r candidate; do
       candidate_version=$(
-        "$plutil_cmd" -extract CFBundleShortVersionString raw -o - \
+        run_privileged "$plutil_cmd" -extract CFBundleShortVersionString raw -o - \
           "$candidate/Contents/Info.plist" 2>/dev/null || true
       )
       if [ "$candidate_version" = "$version" ]; then
@@ -105,7 +112,7 @@ find_installer() {
         return 0
       fi
     done <<EOF
-$(find "$search_root" -maxdepth 1 -type d -name 'Install macOS *.app' -print | sort)
+$(run_privileged find "$search_root" -maxdepth 1 \( -type d -o -type l \) -name 'Install macOS *.app' -print | sort)
 EOF
   done <<EOF
 $installer_roots
@@ -140,7 +147,7 @@ done
   printf '%s\n' "fetch-installer: no Install macOS app with version $version found in $installer_location; see $available_file" >&2
   exit 1
 }
-test -x "$installer/Contents/Resources/startosinstall" || {
+run_privileged /bin/test -x "$installer/Contents/Resources/startosinstall" || {
   printf '%s\n' "fetch-installer: installer has no executable startosinstall" >&2
   exit 1
 }
