@@ -87,6 +87,8 @@ DISTILL_PUBLISH=1 scripts/publish-release release/distill-build-123-1 \
 
 The publisher rechecks `checksums.txt`, refuses an existing tag, and uploads the Bottle and metadata assets through `gh`.
 
+The `Publish Community Bottles` workflow is the CI/CD path for this bundle. It builds the four native runner/architecture combinations, verifies each candidate on a fresh runner, assembles one multi-platform bundle, and uploads it as a workflow artifact. Set `publish` to `true` and provide a new release tag to let the final job call `publish-release`; the default keeps the run at the reviewable artifact stage.
+
 Source artifacts can be prefetched into the content-addressed layout with trusted metadata:
 
 ```sh

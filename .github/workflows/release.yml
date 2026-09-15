@@ -1,0 +1,176 @@
+name: Publish Community Bottles
+
+on:
+  workflow_dispatch:
+    inputs:
+      formula:
+        description: Formula to build
+        required: true
+        default: csound
+        type: string
+      publish:
+        description: Publish the verified bundle as a GitHub Release
+        required: true
+        default: false
+        type: boolean
+      tag:
+        description: GitHub Release tag used when publish is enabled
+        required: true
+        default: v0.1.0
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: community-bottles-${{ inputs.formula }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+          - runner: macos-26
+            arch: arm64
+          - runner: macos-26-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      DISTILL_FORMULA: ${{ inputs.formula }}
+      DISTILL_RELEASE_BUILD: "1"
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_ARTIFACT_DOMAIN: ${{ vars.DISTILL_ARTIFACT_DOMAIN }}
+      HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Authorize Homebrew bottle downloads
+        run: |
+          token=$(./scripts/homebrew-ghcr-token "$DISTILL_FORMULA")
+          echo "::add-mask::$token"
+          printf '%s\n' "HOMEBREW_DOCKER_REGISTRY_TOKEN=$token" >> "$GITHUB_ENV"
+
+      - name: Build and package
+        run: |
+          test -n "$HOMEBREW_ARTIFACT_DOMAIN"
+          ./scripts/native-build "$DISTILL_FORMULA" out
+          ./scripts/package-release out release "$GITHUB_RUN_ID-$RUNNER_OS-${{ matrix.arch }}" "$GITHUB_RUN_ATTEMPT"
+
+      - name: Upload release candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ matrix.runner }}-${{ matrix.arch }}
+          path: release/
+          if-no-files-found: error
+
+  verify:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+          - runner: macos-26
+            arch: arm64
+          - runner: macos-26-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      DISTILL_FORMULA: ${{ inputs.formula }}
+      DISTILL_RELEASE_BUILD: "1"
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_ARTIFACT_DOMAIN: ${{ vars.DISTILL_ARTIFACT_DOMAIN }}
+      HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Authorize Homebrew bottle downloads
+        run: |
+          token=$(./scripts/homebrew-ghcr-token "$DISTILL_FORMULA")
+          echo "::add-mask::$token"
+          printf '%s\n' "HOMEBREW_DOCKER_REGISTRY_TOKEN=$token" >> "$GITHUB_ENV"
+
+      - name: Download release candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-${{ matrix.runner }}-${{ matrix.arch }}
+          path: release/
+
+      - name: Verify on fresh runner
+        run: |
+          test -n "$HOMEBREW_ARTIFACT_DOMAIN"
+          bottle=$(find release -type f -name '*.bottle*.tar.gz' -print | sed -n '1p')
+          checksums=$(find release -type f -name checksums.txt -print | sed -n '1p')
+          test -n "$bottle"
+          test -n "$checksums"
+          expected=$(awk -v file="$(basename "$bottle")" '$2 == file { print $1; exit }' "$checksums")
+          test -n "$expected"
+          ./scripts/native-verify "$DISTILL_FORMULA" "$bottle" "$expected" out/native-verify
+
+  package:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Download all verified candidates
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-*
+          path: candidates/
+
+      - name: Assemble release bundle
+        run: |
+          ./scripts/package-release candidates release "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          release_dir=$(find release -mindepth 1 -maxdepth 1 -type d -name 'distill-build-*' -print | sed -n '1p')
+          test -n "$release_dir"
+          if find "$release_dir" -type f \( -name '*.qcow2' -o -name '*.img' -o -name '*.raw' \) -print | grep -q .; then
+            echo "release bundle contains a VM image" >&2
+            exit 1
+          fi
+
+      - name: Upload assembled release candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-bundle-${{ github.run_id }}
+          path: release/
+          if-no-files-found: error
+
+  publish:
+    if: ${{ inputs.publish == true }}
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      DISTILL_RELEASE_TAG: ${{ inputs.tag }}
+      DISTILL_PUBLISH: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Download assembled release candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-bundle-${{ github.run_id }}
+          path: release/
+
+      - name: Publish GitHub Release
+        run: |
+          release_dir=$(find release -mindepth 1 -maxdepth 1 -type d -name 'distill-build-*' -print | sed -n '1p')
+          test -n "$release_dir"
+          ./scripts/publish-release "$release_dir" "$DISTILL_RELEASE_TAG" "$GITHUB_REPOSITORY"
