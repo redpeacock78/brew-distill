@@ -36,6 +36,21 @@ command -v "$softwareupdate_cmd" >/dev/null 2>&1 || {
   printf '%s\n' "fetch-installer: softwareupdate is required" >&2
   exit 1
 }
+fetch_full_installer() {
+  if [ "${DISTILL_SOFTWAREUPDATE_SUDO:-0}" = "1" ]; then
+    command -v sudo >/dev/null 2>&1 || {
+      printf '%s\n' "fetch-installer: sudo is required for privileged softwareupdate" >&2
+      exit 1
+    }
+    sudo -n true 2>/dev/null || {
+      printf '%s\n' "fetch-installer: passwordless sudo is required for privileged softwareupdate" >&2
+      exit 1
+    }
+    sudo -n "$softwareupdate_cmd" "$@"
+  else
+    "$softwareupdate_cmd" "$@"
+  fi
+}
 plutil_cmd=${DISTILL_PLUTIL:-plutil}
 command -v "$plutil_cmd" >/dev/null 2>&1 || {
   printf '%s\n' "fetch-installer: plutil is required to verify the installer version" >&2
@@ -45,7 +60,7 @@ command -v "$plutil_cmd" >/dev/null 2>&1 || {
 mkdir -p "$output_dir"
 available_file="$output_dir/full-installers.txt"
 "$softwareupdate_cmd" --list-full-installers > "$available_file" 2>&1 || true
-"$softwareupdate_cmd" --fetch-full-installer --full-installer-version "$version"
+fetch_full_installer --fetch-full-installer --full-installer-version "$version"
 if [ -n "${DISTILL_INSTALLER_ROOT:-}" ]; then
   installer_roots=$DISTILL_INSTALLER_ROOT
   installer_location=$installer_roots

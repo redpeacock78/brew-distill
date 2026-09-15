@@ -106,6 +106,7 @@ HOME="$test_dir" \
 QEMU_SYSTEM_X86_64="$test_dir/bin/qemu-system-x86_64" \
 QEMU_IMG="$test_dir/bin/qemu-img" \
 DISTILL_SOFTWAREUPDATE="$test_dir/bin/softwareupdate" \
+DISTILL_SOFTWAREUPDATE_SUDO=0 \
 DISTILL_OPENCORE_DIR="$test_dir/opencore" \
 DISTILL_OPENCORE_STRICT=1 DISTILL_CREATE_OPENCORE_DISK=1 \
 DISTILL_INSTALLER_VERSION=13.6.1 \

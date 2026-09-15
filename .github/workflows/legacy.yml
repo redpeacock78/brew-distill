@@ -34,6 +34,7 @@ jobs:
     env:
       DISTILL_MACOS: ${{ inputs.macos }}
       DISTILL_INSTALLER_VERSION: ${{ inputs.installer_version }}
+      DISTILL_SOFTWAREUPDATE_SUDO: "1"
       DISTILL_BATCH_JSON: ${{ inputs.batch }}
       DISTILL_LEGACY_BOOTSTRAP: ${{ vars.DISTILL_LEGACY_BOOTSTRAP }}
       DISTILL_OPENCORE_DIR: ${{ vars.DISTILL_OPENCORE_DIR }}
