@@ -329,17 +329,28 @@ exec >> "\$log" 2>&1
 diskutil list > /Volumes/InstallMedia/diskutil-list.txt 2>&1
 cat /Volumes/InstallMedia/diskutil-list.txt
 d=\$(awk '
-/GUID_partition_scheme/ {
-  size=\$3
-  sub(/^\\*/, "", size)
+/^\/dev\/disk[0-9]+ / {
+  physical=(\$0 ~ / \\(internal, physical\\):$/)
+  disk=physical ? \$1 : ""
+  if (physical) sub(/^\/dev\//, "", disk)
+  next
+}
+physical && /^[[:space:]]*0:/ {
+  size=\$0
+  sub(/^.*\\*/, "", size)
   gsub(/,/, ".", size)
-  if ((size + 0) > largest) {
-    largest=size + 0
-    disk=\$NF
+  split(size, fields, /[[:space:]]+/)
+  value=fields[1] + 0
+  if (fields[2] == "MB") value /= 1024
+  if (fields[2] == "TB") value *= 1024
+  if (value > largest) {
+    largest=value
+    target=disk
   }
 }
 END {
-  if (disk != "") print disk
+  if (target != "") print target
+}
 ' < /Volumes/InstallMedia/diskutil-list.txt)
 printf 'TARGET_DISK=%s\\n' "\$d"
 test -n "\$d"

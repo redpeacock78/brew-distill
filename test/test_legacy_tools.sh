@@ -59,8 +59,21 @@ assert body == b"ok"
 PY
 install_script="$test_dir/install-script.sh"
 awk 'BEGIN {emit=0} $0 == "cat > \"$install_script\" <<EOF" {emit=1; next} emit {if ($0 == "EOF") exit; print}' \
-  "$repo_dir/scripts/hvf/bootstrap-legacy" | sed 's/\\\$/\$/g' > "$install_script"
+  "$repo_dir/scripts/hvf/bootstrap-legacy" | sed -e 's/\\\$/\$/g' -e 's/\\\\/\\/g' > "$install_script"
 sh -n "$install_script"
+disk_list="$test_dir/diskutil-list.txt"
+cat > "$disk_list" <<'EOF'
+/dev/disk0 (internal, physical):
+   0:      GUID_partition_scheme                        *402.7 MB   disk0
+/dev/disk2 (internal, physical):
+   0:      GUID_partition_scheme                        *13.8 GB    disk2
+/dev/disk3 (internal, physical):
+   0:                                                   *68.7 GB    disk3
+/dev/disk4 (synthesized):
+   0:      APFS Container Scheme -                      +13.6 GB    disk4
+EOF
+target_disk=$(sed -n "/^d=\$(awk /,/^' < \/Volumes/p" "$install_script" | sed '1d;$d' | awk -f - "$disk_list")
+test "$target_disk" = disk3
 DISTILL_DISK_CANDIDATES='' DISTILL_MIN_FREE_GIB=0 \
   "$repo_dir/scripts/hvf/reclaim-disk" "$test_dir/out" report >/dev/null
 jq -e '.mode == "report" and .paths == []' "$test_dir/out/reclaim.json" >/dev/null
