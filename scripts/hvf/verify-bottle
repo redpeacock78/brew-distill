@@ -47,6 +47,12 @@ if [ -n "$expected_sha" ] && [ "$(printf '%s' "$expected_sha" | tr '[:upper:]' '
   exit 1
 fi
 repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+timing_recorder="$repo_dir/scripts/hvf/record-timing"
+timing_file=${DISTILL_PHASE_TIMINGS:-}
+record_timing() {
+  [ -n "$timing_file" ] || return 0
+  "$timing_recorder" "$timing_file" "$1" "$(( $(date +%s) - $2 ))" || true
+}
 verify=${DISTILL_GUEST_VERIFY:-$repo_dir/scripts/hvf/verify-formula}
 test -x "$verify" || {
   printf '%s\n' "verify-bottle: guest verifier is unavailable: $verify" >&2
@@ -70,6 +76,8 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+verify_started=$(date +%s)
 "$repo_dir/scripts/hvf/create-overlay" "$base" "$overlay" >/dev/null
 "$verify" "$formula" "$overlay" "$bottle" "$output_dir"
+record_timing bottle_verify "$verify_started"
 printf '%s\n' "verified fresh overlay $formula"

@@ -118,6 +118,7 @@ cas_dir=${DISTILL_CAS_DIR:-$output_dir/cas}
 mapping=${DISTILL_CAS_MAPPING:-$cas_dir/urls.json}
 "$repo_dir/scripts/prefetch-batch" "$batch" "$cas_dir" "$mapping"
 DISTILL_BASE_IMAGE="$base" \
+  DISTILL_PHASE_TIMINGS="$hvf_dir/phase-timings.json" \
   DISTILL_ARTIFACT_DIR="$artifact_dir" \
   DISTILL_OVERLAY_DIR="${DISTILL_OVERLAY_DIR:-$artifact_dir/overlays}" \
   DISTILL_GUEST_BUILD="${DISTILL_GUEST_BUILD:-$repo_dir/scripts/hvf/build-formula}" \

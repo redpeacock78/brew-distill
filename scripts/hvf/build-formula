@@ -22,6 +22,12 @@ test -f "$overlay" || {
 }
 mkdir -p "$artifact_dir"
 repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+timing_recorder="$repo_dir/scripts/hvf/record-timing"
+timing_file=${DISTILL_PHASE_TIMINGS:-}
+record_timing() {
+  [ -n "$timing_file" ] || return 0
+  "$timing_recorder" "$timing_file" "$1" "$(( $(date +%s) - $2 ))" || true
+}
 boot=${DISTILL_GUEST_BOOT:-$repo_dir/scripts/hvf/boot-guest}
 target=${DISTILL_GUEST_SSH_TARGET:-distill@127.0.0.1}
 port=${DISTILL_GUEST_SSH_PORT:-2222}
@@ -136,9 +142,11 @@ if [ "$formula" = "csound" ]; then
   ssh_guest test -s "$guest_dir/smoke.wav"
 fi
 
+bottle_started=$(date +%s)
 brew_shell "cd '$guest_dir' && brew bottle --json '$formula'"
 scp_guest "$target:$guest_dir/*.bottle*.tar.gz" "$artifact_dir/"
 scp_guest "$target:$guest_dir/*.bottle.json" "$artifact_dir/"
+record_timing bottle_create "$bottle_started"
 bottle=$(find "$artifact_dir" -maxdepth 1 -type f -name "${formula##*/}*.bottle*.tar.gz" -print | sed -n '1p')
 test -n "$bottle" || {
   printf '%s\n' "build-formula: no exported Bottle for $formula" >&2

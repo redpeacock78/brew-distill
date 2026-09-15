@@ -23,7 +23,7 @@ case "$version" in
     ;;
 esac
 if [ "$(uname -s)" != "Darwin" ]; then
-  printf '%s\n' "fetch-installer: softwareupdate must run in macOS" >&2
+  printf '%s\n' "fetch-installer: installer acquisition must run in macOS" >&2
   exit 1
 fi
 
@@ -31,20 +31,33 @@ command -v jq >/dev/null 2>&1 || {
   printf '%s\n' "fetch-installer: jq is required" >&2
   exit 1
 }
-softwareupdate_cmd=${DISTILL_SOFTWAREUPDATE:-softwareupdate}
-command -v "$softwareupdate_cmd" >/dev/null 2>&1 || {
-  printf '%s\n' "fetch-installer: softwareupdate is required" >&2
+plutil_cmd=${DISTILL_PLUTIL:-plutil}
+command -v "$plutil_cmd" >/dev/null 2>&1 || {
+  printf '%s\n' "fetch-installer: plutil is required to verify the installer version" >&2
   exit 1
 }
+
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+timing_recorder="$script_dir/record-timing"
+timing_file=${DISTILL_PHASE_TIMINGS:-$output_dir/phase-timings.json}
+mkdir -p "$output_dir"
+record_phase() {
+  phase_name=$1
+  phase_started=$2
+  phase_elapsed=$(( $(date +%s) - phase_started ))
+  "$timing_recorder" "$timing_file" "$phase_name" "$phase_elapsed" || true
+}
+
+softwareupdate_cmd=${DISTILL_SOFTWAREUPDATE:-softwareupdate}
 fetch_full_installer() {
   if [ "${DISTILL_SOFTWAREUPDATE_SUDO:-0}" = "1" ]; then
     command -v sudo >/dev/null 2>&1 || {
       printf '%s\n' "fetch-installer: sudo is required for privileged softwareupdate" >&2
-      exit 1
+      return 1
     }
     sudo -n true 2>/dev/null || {
       printf '%s\n' "fetch-installer: passwordless sudo is required for privileged softwareupdate" >&2
-      exit 1
+      return 1
     }
     sudo -n "$softwareupdate_cmd" "$@"
   else
@@ -58,35 +71,44 @@ run_privileged() {
     "$@"
   fi
 }
-fetch_attempts=${DISTILL_SOFTWAREUPDATE_ATTEMPTS:-1}
-case "$fetch_attempts" in
-  ''|*[!0-9]*|0)
-    printf '%s\n' "fetch-installer: DISTILL_SOFTWAREUPDATE_ATTEMPTS must be a positive integer" >&2
+
+if [ -n "${DISTILL_INSTALLER_CATALOG_PRIMARY+x}" ]; then
+  catalog_primary=$DISTILL_INSTALLER_CATALOG_PRIMARY
+elif [ -n "${DISTILL_INSTALLER_CATALOG_FALLBACK+x}" ]; then
+  catalog_primary=$DISTILL_INSTALLER_CATALOG_FALLBACK
+else
+  catalog_primary=1
+fi
+case "$catalog_primary" in
+  0|1) ;;
+  *)
+    printf '%s\n' "fetch-installer: DISTILL_INSTALLER_CATALOG_PRIMARY must be 0 or 1" >&2
     exit 2
     ;;
 esac
-plutil_cmd=${DISTILL_PLUTIL:-plutil}
-command -v "$plutil_cmd" >/dev/null 2>&1 || {
-  printf '%s\n' "fetch-installer: plutil is required to verify the installer version" >&2
-  exit 1
-}
+softwareupdate_fallback=${DISTILL_INSTALLER_SOFTWAREUPDATE_FALLBACK:-1}
+case "$softwareupdate_fallback" in
+  0|1) ;;
+  *)
+    printf '%s\n' "fetch-installer: DISTILL_INSTALLER_SOFTWAREUPDATE_FALLBACK must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
+aria_connections=${DISTILL_ARIA2_CONNECTIONS:-8}
+aria_split=${DISTILL_ARIA2_SPLIT:-$aria_connections}
+case "$aria_connections" in
+  ''|*[!0-9]*|0)
+    printf '%s\n' "fetch-installer: DISTILL_ARIA2_CONNECTIONS must be a positive integer" >&2
+    exit 2
+    ;;
+esac
+case "$aria_split" in
+  ''|*[!0-9]*|0)
+    printf '%s\n' "fetch-installer: DISTILL_ARIA2_SPLIT must be a positive integer" >&2
+    exit 2
+    ;;
+esac
 
-mkdir -p "$output_dir"
-available_file="$output_dir/full-installers.txt"
-"$softwareupdate_cmd" --list-full-installers > "$available_file" 2>&1 || true
-fetch_attempt=1
-while [ "$fetch_attempt" -le "$fetch_attempts" ]; do
-  if fetch_full_installer --fetch-full-installer --full-installer-version "$version"; then
-    break
-  else
-    fetch_status=$?
-  fi
-  if [ "$fetch_attempt" -eq "$fetch_attempts" ]; then
-    exit "$fetch_status"
-  fi
-  printf '%s\n' "fetch-installer: softwareupdate fetch attempt $fetch_attempt/$fetch_attempts failed; retrying" >&2
-  fetch_attempt=$((fetch_attempt + 1))
-done
 if [ -n "${DISTILL_INSTALLER_ROOT:-}" ]; then
   installer_roots=$DISTILL_INSTALLER_ROOT
   installer_location=$installer_roots
@@ -101,8 +123,7 @@ $HOME/Applications"
 fi
 package_roots=${DISTILL_INSTALLER_PACKAGE_ROOT:-/Library/Updates}
 package_roots="$package_roots
-/System/Library/AssetsV2
-/private/var/folders"
+/System/Library/AssetsV2"
 if [ -n "${HOME:-}" ]; then
   for package_root in "$HOME/Library/Updates" "$HOME/Library/Caches"; do
     package_roots="$package_roots
@@ -148,132 +169,272 @@ $package_roots
 EOF
   return 1
 }
+
 installer_cmd=${DISTILL_INSTALLER_CMD:-/usr/sbin/installer}
 installer_package_log="$output_dir/installer-package.log"
 printf '%s\n' "no cached InstallAssistant package was extracted" > "$installer_package_log"
 attempted_package=
 installer_expected_bundle_version=
+installer=
+package_sha=
+catalog_source=
+catalog_product_id=
+catalog_bundle_version=
+catalog_package_url=
+catalog_resolved_at=
+
 extract_cached_installer() {
   installer_package=$(find_installer_package || true)
   [ -n "$installer_package" ] || return 1
   [ "$installer_package" != "$attempted_package" ] || return 1
   attempted_package=$installer_package
   printf '%s\n' "fetch-installer: extracting installer app from $installer_package" >&2
+  pkg_started=$(date +%s)
   if run_privileged "$installer_cmd" -pkg "$installer_package" -target / \
-    > "$installer_package_log" 2>&1; then
+    >> "$installer_package_log" 2>&1; then
     printf '%s\n' "extracted $installer_package" >> "$installer_package_log"
   else
     installer_status=$?
     printf '%s\n' "installer exit status: $installer_status" >> "$installer_package_log"
+    record_phase installer_pkg_install "$pkg_started"
     return "$installer_status"
   fi
+  record_phase installer_pkg_install "$pkg_started"
+  discovery_started=$(date +%s)
   installer=$(find_installer || true)
+  record_phase installer_discovery "$discovery_started"
   [ -n "$installer" ]
 }
-extract_catalog_installer() {
+
+catalog_cache=${DISTILL_INSTALLER_CATALOG_CACHE:-$output_dir/installer-catalog-cache.json}
+catalog_record=
+catalog_metadata_valid() {
+  printf '%s' "$catalog_record" | jq -e --arg version "$version" '
+    type == "object" and
+    .version == $version and
+    (.product_id | type == "string" and length > 0) and
+    (.bundle_version | type == "string" and length > 0) and
+    (.package_url | type == "string" and startswith("https://"))
+  ' >/dev/null
+}
+load_catalog_cache() {
+  [ -s "$catalog_cache" ] || return 1
+  catalog_record=$(jq -c --arg version "$version" -e '
+    select(type == "object" and .version == $version) |
+    select((.product_id | type == "string" and length > 0)) |
+    select((.bundle_version | type == "string" and length > 0)) |
+    select((.package_url | type == "string" and startswith("https://")))
+  ' "$catalog_cache" 2>/dev/null) || {
+    rm -f -- "$catalog_cache"
+    return 1
+  }
+  installer_expected_bundle_version=$(printf '%s' "$catalog_record" | jq -er '.bundle_version')
+  catalog_source=$(printf '%s' "$catalog_record" | jq -r '.source // "apple-catalog"')
+  catalog_product_id=$(printf '%s' "$catalog_record" | jq -r '.product_id')
+  catalog_bundle_version=$(printf '%s' "$catalog_record" | jq -r '.bundle_version')
+  catalog_package_url=$(printf '%s' "$catalog_record" | jq -r '.package_url')
+  catalog_resolved_at=$(printf '%s' "$catalog_record" | jq -r '.resolved_at // empty')
+}
+save_catalog_cache() {
+  resolved_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  catalog_record=$(printf '%s' "$catalog_record" | jq -c \
+    --arg resolved_at "$resolved_at" \
+    '. + {source:"apple-catalog",resolved_at:$resolved_at}')
+  mkdir -p "$(dirname -- "$catalog_cache")"
+  cache_tmp="$catalog_cache.tmp.$$"
+  printf '%s\n' "$catalog_record" > "$cache_tmp"
+  mv "$cache_tmp" "$catalog_cache"
+  catalog_source=apple-catalog
+  catalog_product_id=$(printf '%s' "$catalog_record" | jq -r '.product_id')
+  catalog_bundle_version=$(printf '%s' "$catalog_record" | jq -r '.bundle_version')
+  catalog_package_url=$(printf '%s' "$catalog_record" | jq -r '.package_url')
+  catalog_resolved_at=$resolved_at
+}
+resolve_catalog_record() {
   command -v python3 >/dev/null 2>&1 || {
-    printf '%s\n' "python3 is required for the Apple catalog fallback" >> "$installer_package_log"
+    printf '%s\n' "python3 is required for the Apple catalog resolver" >> "$installer_package_log"
     return 1
   }
-  command -v shasum >/dev/null 2>&1 || {
-    printf '%s\n' "shasum is required for the Apple catalog fallback" >> "$installer_package_log"
+  catalog_helper=${DISTILL_INSTALLER_CATALOG_HELPER:-$script_dir/fetch-installer-catalog.py}
+  catalog_started=$(date +%s)
+  if ! catalog_record=$(python3 "$catalog_helper" "$version" 2>> "$installer_package_log"); then
+    record_phase catalog_resolve "$catalog_started"
     return 1
-  }
-  catalog_helper=${DISTILL_INSTALLER_CATALOG_HELPER:-$(dirname -- "$0")/fetch-installer-catalog.py}
-  catalog_record=$(python3 "$catalog_helper" "$version" 2>> "$installer_package_log") || return 1
-  installer_expected_bundle_version=$(printf '%s' "$catalog_record" | jq -er \
-    '.bundle_version | select(type == "string" and length > 0)') || {
-    printf '%s\n' "catalog record has no installer bundle version" >> "$installer_package_log"
+  fi
+  if ! catalog_metadata_valid; then
+    printf '%s\n' "catalog record is incomplete or targets another version" >> "$installer_package_log"
+    record_phase catalog_resolve "$catalog_started"
     return 1
-  }
-  package_url=$(printf '%s' "$catalog_record" | jq -er \
-    '.package_url | select(startswith("https://"))') || return 1
+  fi
+  save_catalog_cache
+  record_phase catalog_resolve "$catalog_started"
+}
+download_catalog_package() {
+  package_url=$(printf '%s' "$catalog_record" | jq -er '.package_url | select(startswith("https://"))') || return 1
+  installer_expected_bundle_version=$(printf '%s' "$catalog_record" | jq -er '.bundle_version') || return 1
   package_path="$output_dir/InstallAssistant-$version.pkg"
+  download_started=$(date +%s)
+  rm -f -- "$package_path"
   {
+    printf '%s\n' "catalog_source=${catalog_source:-apple-catalog}"
     printf '%s\n' "catalog=$catalog_record"
     printf '%s\n' "downloading=$package_url"
   } >> "$installer_package_log"
+  download_status=1
   if command -v aria2c >/dev/null 2>&1; then
-    printf '%s\n' 'downloader=aria2c' >> "$installer_package_log"
-    if ! aria2c \
+    printf '%s\n' "downloader=aria2c" >> "$installer_package_log"
+    if aria2c \
       --allow-overwrite=true --auto-file-renaming=false --file-allocation=none \
-      --max-connection-per-server=8 --split=8 --min-split-size=10M \
+      "--max-connection-per-server=$aria_connections" \
+      "--split=$aria_split" --min-split-size=10M \
       --connect-timeout=15 --timeout="${DISTILL_DOWNLOAD_TIMEOUT:-600}" \
       --max-tries=3 --retry-wait=2 \
       --dir "$output_dir" --out "$(basename -- "$package_path")" "$package_url" \
-      >> "$installer_package_log" 2>&1; then
-      printf '%s\n' "catalog package download failed" >> "$installer_package_log"
-      return 1
+      >> "$installer_package_log" 2>&1 && [ -s "$package_path" ]; then
+      download_status=0
+    else
+      printf '%s\n' "aria2c package download failed; trying curl" >> "$installer_package_log"
     fi
-  elif command -v curl >/dev/null 2>&1; then
-    printf '%s\n' 'downloader=curl' >> "$installer_package_log"
+  fi
+  if [ "$download_status" -ne 0 ]; then
+    command -v curl >/dev/null 2>&1 || {
+      printf '%s\n' "aria2c or curl is required for the Apple catalog download" >> "$installer_package_log"
+      record_phase installer_download "$download_started"
+      return 1
+    }
+    printf '%s\n' 'downloader=curl-fallback' >> "$installer_package_log"
     if ! curl --fail --location --retry 3 --retry-delay 2 --progress-bar \
       "$package_url" -o "$package_path" >> "$installer_package_log" 2>&1; then
       printf '%s\n' "catalog package download failed" >> "$installer_package_log"
+      record_phase installer_download "$download_started"
       return 1
     fi
-  else
-    printf '%s\n' "aria2c or curl is required for the Apple catalog fallback" >> "$installer_package_log"
-    return 1
   fi
+  record_phase installer_download "$download_started"
+  [ -s "$package_path" ] || return 1
   package_sha=$(shasum -a 256 "$package_path" | awk '{print $1}')
   printf '%s\n' "package=$package_path" "package_sha256=$package_sha" >> "$installer_package_log"
+  pkg_started=$(date +%s)
   if run_privileged env CM_BUILD=CM_BUILD "$installer_cmd" -pkg "$package_path" -target / \
     >> "$installer_package_log" 2>&1; then
     :
   else
     installer_status=$?
     printf '%s\n' "installer exit status: $installer_status" >> "$installer_package_log"
+    record_phase installer_pkg_install "$pkg_started"
     return "$installer_status"
   fi
+  record_phase installer_pkg_install "$pkg_started"
   printf '%s\n' "catalog package installed" >> "$installer_package_log"
+  discovery_started=$(date +%s)
   installer=$(find_installer || true)
+  record_phase installer_discovery "$discovery_started"
   [ -n "$installer" ]
 }
-installer=
-discovery_timeout=${DISTILL_INSTALLER_DISCOVERY_TIMEOUT:-300}
-discovery_poll=${DISTILL_INSTALLER_DISCOVERY_POLL:-5}
-case "$discovery_timeout" in
-  ''|*[!0-9]*|0)
-    printf '%s\n' "fetch-installer: DISTILL_INSTALLER_DISCOVERY_TIMEOUT must be a positive integer" >&2
-    exit 2
-    ;;
-esac
-case "$discovery_poll" in
-  ''|*[!0-9]*|0)
-    printf '%s\n' "fetch-installer: DISTILL_INSTALLER_DISCOVERY_POLL must be a positive integer" >&2
-    exit 2
-    ;;
-esac
+try_catalog() {
+  catalog_record=
+  installer_expected_bundle_version=
+  catalog_source=
+  catalog_started=$(date +%s)
+  if load_catalog_cache; then
+    record_phase catalog_resolve "$catalog_started"
+    printf '%s\n' "fetch-installer: using cached Apple catalog URL for $version" >&2
+    if download_catalog_package; then
+      return 0
+    fi
+    printf '%s\n' "cached Apple catalog URL failed; invalidating $catalog_cache" >> "$installer_package_log"
+    rm -f -- "$catalog_cache"
+  fi
+  printf '%s\n' "fetch-installer: resolving the exact installer package from Apple's catalog" >&2
+  catalog_record=
+  catalog_source=
+  installer_expected_bundle_version=
+  if resolve_catalog_record; then
+    if download_catalog_package; then
+      return 0
+    fi
+    rm -f -- "$catalog_cache"
+  fi
+  return 1
+}
+
 discovery_started=$(date +%s)
-printf '%s\n' "fetch-installer: waiting up to ${discovery_timeout}s for the installer app" >&2
 installer=$(find_installer || true)
 if [ -z "$installer" ]; then
   extract_cached_installer || true
 fi
-while [ -z "$installer" ]; do
-  installer=$(find_installer || true)
-  [ -n "$installer" ] && break
-  extract_cached_installer || true
-  [ -n "$installer" ] && break
-  elapsed=$(( $(date +%s) - discovery_started ))
-  [ "$elapsed" -ge "$discovery_timeout" ] && break
-  sleep "$discovery_poll"
-done
-catalog_fallback=${DISTILL_INSTALLER_CATALOG_FALLBACK:-0}
-case "$catalog_fallback" in
-  0|1) ;;
-  *)
-    printf '%s\n' "fetch-installer: DISTILL_INSTALLER_CATALOG_FALLBACK must be 0 or 1" >&2
-    exit 2
-    ;;
-esac
-if [ -z "$installer" ] && [ "$catalog_fallback" = "1" ]; then
-  printf '%s\n' "fetch-installer: resolving the exact installer package from Apple's catalog" >&2
-  extract_catalog_installer || true
+if [ -n "$installer" ]; then
+  record_phase installer_discovery "$discovery_started"
 fi
+
+if [ -z "$installer" ] && [ "$catalog_primary" = "1" ]; then
+  try_catalog || true
+fi
+
+if [ -z "$installer" ] && [ "$softwareupdate_fallback" = "1" ]; then
+  command -v "$softwareupdate_cmd" >/dev/null 2>&1 || {
+    printf '%s\n' "fetch-installer: softwareupdate fallback is unavailable: $softwareupdate_cmd" >&2
+    exit 1
+  }
+  fetch_attempts=${DISTILL_SOFTWAREUPDATE_ATTEMPTS:-1}
+  case "$fetch_attempts" in
+    ''|*[!0-9]*|0)
+      printf '%s\n' "fetch-installer: DISTILL_SOFTWAREUPDATE_ATTEMPTS must be a positive integer" >&2
+      exit 2
+      ;;
+  esac
+  discovery_timeout=${DISTILL_INSTALLER_DISCOVERY_TIMEOUT:-60}
+  discovery_poll=${DISTILL_INSTALLER_DISCOVERY_POLL:-5}
+  case "$discovery_timeout" in
+    ''|*[!0-9]*|0)
+      printf '%s\n' "fetch-installer: DISTILL_INSTALLER_DISCOVERY_TIMEOUT must be a positive integer" >&2
+      exit 2
+      ;;
+  esac
+  case "$discovery_poll" in
+    ''|*[!0-9]*|0)
+      printf '%s\n' "fetch-installer: DISTILL_INSTALLER_DISCOVERY_POLL must be a positive integer" >&2
+      exit 2
+      ;;
+  esac
+  installer_expected_bundle_version=
+  attempted_package=
+  package_roots="$package_roots
+/private/var/folders"
+  available_file="$output_dir/full-installers.txt"
+  "$softwareupdate_cmd" --list-full-installers > "$available_file" 2>&1 || true
+  fetch_attempt=1
+  while [ "$fetch_attempt" -le "$fetch_attempts" ]; do
+    if fetch_full_installer --fetch-full-installer --full-installer-version "$version"; then
+      break
+    fi
+    if [ "$fetch_attempt" -eq "$fetch_attempts" ]; then
+      printf '%s\n' "fetch-installer: softwareupdate fetch failed" >&2
+      break
+    fi
+    printf '%s\n' "fetch-installer: softwareupdate fetch attempt $fetch_attempt/$fetch_attempts failed; retrying" >&2
+    fetch_attempt=$((fetch_attempt + 1))
+  done
+  discovery_started=$(date +%s)
+  printf '%s\n' "fetch-installer: waiting up to ${discovery_timeout}s for the installer app after softwareupdate" >&2
+  installer=$(find_installer || true)
+  if [ -z "$installer" ]; then
+    extract_cached_installer || true
+  fi
+  while [ -z "$installer" ]; do
+    installer=$(find_installer || true)
+    [ -n "$installer" ] && break
+    extract_cached_installer || true
+    [ -n "$installer" ] && break
+    elapsed=$(( $(date +%s) - discovery_started ))
+    [ "$elapsed" -ge "$discovery_timeout" ] && break
+    sleep "$discovery_poll"
+  done
+  record_phase installer_discovery "$discovery_started"
+fi
+
 [ -n "$installer" ] || {
-  printf '%s\n' "fetch-installer: no Install macOS app with version $version found in $installer_location or the configured package caches; see $available_file" >&2
+  printf '%s\n' "fetch-installer: no Install macOS app with version $version found in $installer_location or the configured package caches; see ${output_dir}/full-installers.txt" >&2
   exit 1
 }
 run_privileged /bin/test -x "$installer/Contents/Resources/startosinstall" || {
@@ -287,11 +448,24 @@ bundle_version=$(run_privileged "$plutil_cmd" -extract CFBundleShortVersionStrin
   printf '%s\n' "fetch-installer: installer has no CFBundleShortVersionString" >&2
   exit 1
 }
+if [ -n "$installer_expected_bundle_version" ]; then
+  [ "$bundle_version" = "$installer_expected_bundle_version" ] || {
+    printf '%s\n' "fetch-installer: installer bundle version does not match catalog metadata" >&2
+    exit 1
+  }
+fi
 
 jq -n \
   --arg version "$version" \
   --arg bundle_version "$bundle_version" \
   --arg installer "$installer" \
-  '{schema:1,version:$version,bundle_version:$bundle_version,installer:$installer}' \
+  --arg source "$catalog_source" \
+  --arg product_id "$catalog_product_id" \
+  --arg catalog_bundle_version "$catalog_bundle_version" \
+  --arg package_url "$catalog_package_url" \
+  --arg resolved_at "$catalog_resolved_at" \
+  --arg package_sha256 "$package_sha" \
+  '{schema:1,version:$version,bundle_version:$bundle_version,installer:$installer,
+    catalog:(if $source == "" then null else {source:$source,product_id:$product_id,bundle_version:$catalog_bundle_version,package_url:$package_url,resolved_at:$resolved_at,package_sha256:$package_sha256} end)}' \
   > "$output_dir/installer.json"
 printf '%s\n' "installer=$installer"

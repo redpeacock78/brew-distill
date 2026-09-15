@@ -13,6 +13,12 @@ command -v jq >/dev/null 2>&1 || {
   exit 1
 }
 repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+timing_recorder="$repo_dir/scripts/hvf/record-timing"
+timing_file=${DISTILL_PHASE_TIMINGS:-}
+record_timing() {
+  [ -n "$timing_file" ] || return 0
+  "$timing_recorder" "$timing_file" "$1" "$(( $(date +%s) - $2 ))" || true
+}
 if [ "${DISTILL_RELEASE_BUILD:-0}" = "1" ]; then
   case "${HOMEBREW_ARTIFACT_DOMAIN:-}" in
     https://?*) ;;
@@ -191,6 +197,7 @@ $(jq -r '.formulas[]' "$batch")
 EOF
 
 batch_finished=$(date +%s)
+record_timing formula_build "$batch_started"
 jq -n \
   --argjson disk_reclaim "${DISTILL_DISK_RECLAIM_SECONDS:-0}" \
   --argjson guest_bootstrap "${DISTILL_BATCH_BOOTSTRAP_SECONDS:-0}" \

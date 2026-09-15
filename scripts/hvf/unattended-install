@@ -195,6 +195,7 @@ class Driver
     @type_delay = env_number("DISTILL_UNATTENDED_TYPE_DELAY", 0.12)
     @picker_frame = nil
     @recovery_frame = nil
+    @guest_boot_seconds = nil
   end
 
   def run
@@ -204,6 +205,7 @@ class Driver
       frame = @monitor.frame
       frame.visible ? frame : nil
     end
+    @guest_boot_seconds = (monotonic - started).to_i
     sleep @picker_settle
     send_key "ret"
 
@@ -281,7 +283,7 @@ class Driver
       if boots.positive? && guest_boot_started && monotonic - last_change >= @done_quiet
         elapsed = (monotonic - started).to_i
         event "install finished after #{boots} reboot(s)"
-        write_result(reboots: boots, elapsed: elapsed)
+        write_result(reboots: boots, elapsed: elapsed, guest_boot_seconds: @guest_boot_seconds)
         return
       end
 
@@ -366,7 +368,7 @@ class Driver
     previous
   end
 
-  def write_result(reboots:, elapsed:)
+  def write_result(reboots:, elapsed:, guest_boot_seconds:)
     FileUtils.mkdir_p(File.dirname(@output))
     picker_resolution = @picker_frame && @picker_frame.dimensions
     recovery_resolution = @recovery_frame && @recovery_frame.dimensions
@@ -377,6 +379,7 @@ class Driver
         disk_gib: @disk_gib,
         reboots: reboots,
         elapsed_seconds: elapsed,
+        guest_boot_seconds: guest_boot_seconds,
         picker_resolution: picker_resolution,
         recovery_resolution: recovery_resolution,
         events: @events

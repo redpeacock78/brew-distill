@@ -124,6 +124,7 @@ chmod 755 "$test_dir/builder"
 jq -n '{formulas:["good","bad","after"],dependencies:{after:["bad"]}}' > "$test_dir/batch.json"
 if QEMU_IMG="$test_dir/bin/qemu-img" QEMU_IMG_LOG="$test_dir/qemu-img.log" \
   DISTILL_BASE_IMAGE="$test_dir/base.qcow2" DISTILL_ARTIFACT_DIR="$test_dir/artifacts" \
+  DISTILL_PHASE_TIMINGS="$test_dir/out/phase-timings.json" \
   DISTILL_OVERLAY_DIR="$test_dir/overlays" DISTILL_GUEST_BUILD="$test_dir/builder" \
   DISTILL_VERIFY_AFTER_BUILD=1 DISTILL_GUEST_VERIFY="$test_dir/verifier" \
   "$repo_dir/scripts/hvf/build-batch" "$test_dir/batch.json" >/dev/null; then
@@ -141,10 +142,13 @@ sample_sha=$(shasum -a 256 "$test_dir/sample.bottle.tar.gz" | awk '{print $1}')
 QEMU_IMG="$test_dir/bin/qemu-img" QEMU_IMG_LOG="$test_dir/qemu-img.log" \
   DISTILL_GUEST_VERIFY="$test_dir/verifier" \
   DISTILL_BOTTLE_SHA256="$sample_sha" \
+  DISTILL_PHASE_TIMINGS="$test_dir/out/phase-timings.json" \
   "$repo_dir/scripts/hvf/verify-bottle" good "$test_dir/sample.bottle.tar.gz" \
   "$test_dir/base.qcow2" "$test_dir/artifacts" >/dev/null
 test -s "$test_dir/artifacts/verified.txt"
 test ! -e "$test_dir/artifacts/verify-overlays/good-fresh.qcow2"
+jq -e '.phases.formula_build >= 0 and .phases.bottle_verify >= 0' \
+  "$test_dir/out/phase-timings.json" >/dev/null
 
 printf '%s\n' host > "$test_dir/out/host-info.json"
 "$repo_dir/scripts/hvf/export-diagnostics" "$test_dir/out" "$test_dir/diagnostics.tar.gz" >/dev/null

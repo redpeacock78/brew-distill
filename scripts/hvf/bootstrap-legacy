@@ -82,6 +82,16 @@ for tool in "$qemu_bin" "$qemu_img" brew curl hdiutil jq openssl pkgbuild shasum
   }
 done
 mkdir -p "$output_dir"
+timing_recorder="$repo_dir/scripts/hvf/record-timing"
+timing_file=${DISTILL_PHASE_TIMINGS:-$output_dir/phase-timings.json}
+record_timing() {
+  timing_phase=$1
+  timing_started=$2
+  "$timing_recorder" "$timing_file" "$timing_phase" "$(( $(date +%s) - timing_started ))" || true
+}
+record_timing_seconds() {
+  "$timing_recorder" "$timing_file" "$1" "$2" || true
+}
 printf '%s' "$qemu_args" | jq -e \
   'type == "array" and length > 0 and all(.[]; type == "string") and (any(.[]; . == "-accel=hvf") or ([range(0; length - 1) as $i | .[$i] == "-accel" and .[$i + 1] == "hvf"] | any))' >/dev/null || {
   printf '%s\n' "bootstrap-legacy: DISTILL_QEMU_ARGS_JSON must request -accel hvf" >&2
@@ -161,6 +171,7 @@ test -n "$guest_password" || {
 
 pkg_root="$work_dir/pkg-root"
 pkg_scripts="$work_dir/pkg-scripts"
+install_media_started=$(date +%s)
 mkdir -p "$pkg_root/usr/local/libexec" "$pkg_root/Library/LaunchDaemons" "$pkg_scripts"
 cp "$public_key" "$pkg_root/usr/local/libexec/brew-distill-guest-key"
 cp "$repo_dir/scripts/hvf/provision-ssh" "$pkg_root/usr/local/libexec/brew-distill-provision-ssh"
@@ -353,6 +364,7 @@ printf '%s' "$runtime_args_json" | jq -e \
 }
 jq -n --argjson qemu_args "$runtime_args_json" \
   '{schema:1,qemu_args:$qemu_args,vm_image:false}' > "$output_dir/.qemu-runtime.json"
+record_timing install_media_prepare "$install_media_started"
 
 args_json=$(
   printf '%s' "$qemu_args" | jq \
@@ -393,20 +405,43 @@ args_json=$(
        ] end'
 )
 
+guest_boot_started=$(date +%s)
 DISTILL_QEMU_ARGS_JSON="$args_json" \
   DISTILL_OPENCORE_DISK="$opencore_disk" \
   "$repo_dir/scripts/hvf/boot-guest" "$base" "$output_dir" \
   > "$output_dir/qemu.log" 2>&1 &
 qemu_pid=$!
 
+unattended_started=$(date +%s)
+set +e
 "$unattended" --monitor "$monitor" --disk-gib "$disk_gib" \
   --command-file "$command_file" --output "$output_dir/unattended-install.json" \
   --frame "$work_dir/frame.ppm" \
   > "$output_dir/unattended-install.log" 2>&1
+unattended_status=$?
+set -e
+if [ -s "$output_dir/unattended-install.json" ]; then
+  guest_boot_seconds=$(jq -r '.guest_boot_seconds // empty' "$output_dir/unattended-install.json" || true)
+  guest_install_seconds=$(jq -r '.elapsed_seconds // empty' "$output_dir/unattended-install.json" || true)
+  case "$guest_boot_seconds" in
+    ''|*[!0-9]*) guest_boot_seconds=$(( $(date +%s) - guest_boot_started )) ;;
+  esac
+  case "$guest_install_seconds" in
+    ''|*[!0-9]*) guest_install_seconds=$(( $(date +%s) - unattended_started )) ;;
+  esac
+  record_timing_seconds guest_boot "$guest_boot_seconds"
+  record_timing_seconds guest_install "$guest_install_seconds"
+else
+  record_timing guest_boot "$guest_boot_started"
+  record_timing guest_install "$unattended_started"
+fi
+test "$unattended_status" -eq 0
 
+ssh_started=$(date +%s)
 DISTILL_GUEST_SSH_CONNECT_TIMEOUT=5 \
   "$repo_dir/scripts/hvf/wait-ssh" "$target" "$port" \
   "${DISTILL_GUEST_SSH_TIMEOUT:-1200}"
+record_timing guest_ssh_wait "$ssh_started"
 guest_ssh() {
   "$guest_ssh_cmd" ssh "$target" "$port" "$@"
 }
@@ -416,6 +451,7 @@ scp_guest() {
 scp_guest "$target:/var/tmp/brew-distill/ssh-ready.json" "$output_dir/ssh-ready.json"
 guest_ssh sudo -n true
 
+brew_started=$(date +%s)
 homebrew_installer=${DISTILL_HOMEBREW_INSTALLER:-}
 if [ -n "$homebrew_installer" ]; then
   test -f "$homebrew_installer" || {
@@ -471,6 +507,7 @@ guest_ssh env DISTILL_GUEST=1 \
 for file in brew-version.txt brew-config.txt brew-doctor.txt; do
   scp_guest "$target:/var/tmp/brew-distill/homebrew/$file" "$output_dir/$file"
 done
+record_timing brew_bootstrap "$brew_started"
 
 guest_ssh sudo -n launchctl bootout system/org.brew-distill.firstboot >/dev/null 2>&1 || true
 guest_ssh sudo -n rm -f \

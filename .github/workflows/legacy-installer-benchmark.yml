@@ -1,0 +1,78 @@
+name: Legacy Installer Download Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      installer_version:
+        description: Exact macOS installer version
+        required: true
+        default: "13.7.8"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    name: aria2c ${{ matrix.connections }} connections
+    runs-on: macos-15-intel
+    strategy:
+      fail-fast: false
+      matrix:
+        connections: [4, 8, 16]
+    env:
+      DISTILL_INSTALLER_VERSION: ${{ inputs.installer_version }}
+      DISTILL_INSTALLER_CATALOG_PRIMARY: "1"
+      DISTILL_INSTALLER_SOFTWAREUPDATE_FALLBACK: "0"
+      DISTILL_SOFTWAREUPDATE_SUDO: "1"
+      DISTILL_ARIA2_CONNECTIONS: ${{ matrix.connections }}
+      DISTILL_ARIA2_SPLIT: ${{ matrix.connections }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Install aria2c
+        run: brew install aria2
+
+      - name: Download installer
+        run: |
+          set -eu
+          output="$RUNNER_TEMP/brew-distill-installer-${{ matrix.connections }}"
+          mkdir -p "$output"
+          started=$(date +%s)
+          DISTILL_INSTALLER_CATALOG_CACHE="$output/installer-catalog-cache.json" \
+          DISTILL_PHASE_TIMINGS="$output/phase-timings.json" \
+            ./scripts/hvf/fetch-installer "$DISTILL_INSTALLER_VERSION" "$output" \
+            > "$output/fetch.log" 2>&1
+          finished=$(date +%s)
+          package="$output/InstallAssistant-$DISTILL_INSTALLER_VERSION.pkg"
+          test -s "$package"
+          bytes=$(stat -f%z "$package")
+          download_seconds=$(jq -r '.phases.installer_download // 0' "$output/phase-timings.json")
+          average_mib=$(awk -v bytes="$bytes" -v seconds="$download_seconds" \
+            'BEGIN { if (seconds < 1) seconds = 1; printf "%.2f", bytes / 1048576 / seconds }')
+          max_mib=$(grep -Eo '[0-9]+([.][0-9]+)?[KMGT]iB/s' "$output/installer-package.log" | \
+            awk 'match($0,/^[0-9.]+/) { v=substr($0,RSTART,RLENGTH)+0; unit=substr($0,RLENGTH+1,1); factor=(unit=="K" ? 1/1024 : unit=="M" ? 1 : unit=="G" ? 1024 : unit=="T" ? 1048576 : 1); v*=factor; if (v > max) max=v } END { if (max > 0) printf "%.2f MiB/s", max; else print "n/a" }')
+          retries=$(grep -Eic 'retry|retrying' "$output/installer-package.log" || true)
+          throttled=false
+          if grep -Eiq '429|throttl|too many requests|slow down' "$output/installer-package.log"; then
+            throttled=true
+          fi
+          jq -n \
+            --arg version "$DISTILL_INSTALLER_VERSION" \
+            --arg connections "${{ matrix.connections }}" \
+            --argjson wall_seconds "$((finished - started))" \
+            --argjson download_seconds "$download_seconds" \
+            --arg average_mib "$average_mib" \
+            --arg max_mib "$max_mib" \
+            --argjson retries "$retries" \
+            --argjson throttled "$throttled" \
+            '{schema:1,version:$version,connections:($connections|tonumber),wall_seconds:$wall_seconds,download_seconds:$download_seconds,average_mib_per_second:($average_mib|tonumber),max_mib_per_second:$max_mib,retries:$retries,throttled:$throttled}' \
+            > "$output/benchmark.json"
+          cat "$output/benchmark.json"
+          {
+            printf '%s\n' "## aria2c ${{ matrix.connections }} connections"
+            printf '%s\n' '| Metric | Value |' '| --- | ---: |'
+            jq -r 'to_entries[] | "| \(.key) | \(.value) |"' "$output/benchmark.json"
+          } >> "$GITHUB_STEP_SUMMARY"
