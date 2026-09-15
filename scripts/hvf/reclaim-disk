@@ -72,7 +72,12 @@ fi
   fi
 } > "$output_dir/reclaim.txt"
 
-"$repo_dir/scripts/hvf/disk-audit" "$output_dir" "${DISTILL_MIN_FREE_GIB:-35}" after >/dev/null
+if [ "$mode" = report ]; then
+  jq '.snapshot = "after"' "$output_dir/disk-before.json" > "$output_dir/disk-after.json"
+  cp "$output_dir/disk-before.txt" "$output_dir/disk-after.txt"
+else
+  "$repo_dir/scripts/hvf/disk-audit" "$output_dir" "${DISTILL_MIN_FREE_GIB:-35}" after >/dev/null
+fi
 
 jq -n \
   --arg mode "$mode" \

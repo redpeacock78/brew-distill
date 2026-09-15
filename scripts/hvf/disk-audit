@@ -27,17 +27,6 @@ command -v jq >/dev/null 2>&1 || {
 
 mkdir -p "$output_dir"
 report="$output_dir/disk-$snapshot.txt"
-df -h / > "$report"
-printf '%s\n' '' 'Candidate large paths:' >> "$report"
-candidate_list=${DISTILL_DISK_CANDIDATES-"/Applications/Xcode*.app:$HOME/Library/Developer/CoreSimulator:/Library/Developer/CoreSimulator:$HOME/Library/Android/sdk"}
-old_ifs=$IFS
-IFS=:
-for candidate in $candidate_list; do
-  [ -e "$candidate" ] || continue
-  du -sh "$candidate" >> "$report" 2>/dev/null || true
-done
-IFS=$old_ifs
-
 free_kib=$(df -Pk / | awk 'NR == 2 {print $4}')
 case "$free_kib" in
   ""|*[!0-9]*)
@@ -48,6 +37,22 @@ esac
 minimum_kib=$((minimum_gib * 1024 * 1024))
 sufficient=0
 [ "$free_kib" -ge "$minimum_kib" ] && sufficient=1
+
+df -h / > "$report"
+printf '%s\n' '' 'Candidate large paths:' >> "$report"
+if [ "$sufficient" -eq 1 ]; then
+  printf '%s\n' 'skipped: sufficient free space' >> "$report"
+else
+  candidate_list=${DISTILL_DISK_CANDIDATES-"/Applications/Xcode*.app:$HOME/Library/Developer/CoreSimulator:/Library/Developer/CoreSimulator:$HOME/Library/Android/sdk"}
+  old_ifs=$IFS
+  IFS=:
+  for candidate in $candidate_list; do
+    [ -e "$candidate" ] || continue
+    du -sh "$candidate" >> "$report" 2>/dev/null || true
+  done
+  IFS=$old_ifs
+fi
+
 jq -n \
   --arg snapshot "$snapshot" \
   --argjson free_kib "$free_kib" \

@@ -189,6 +189,10 @@ extract_cached_installer() {
   [ "$installer_package" != "$attempted_package" ] || return 1
   attempted_package=$installer_package
   printf '%s\n' "fetch-installer: extracting installer app from $installer_package" >&2
+  checksum_started=$(date +%s)
+  package_sha=$(shasum -a 256 "$installer_package" | awk '{print $1}')
+  record_phase installer_checksum "$checksum_started"
+  printf '%s\n' "package=$installer_package" "package_sha256=$package_sha" >> "$installer_package_log"
   pkg_started=$(date +%s)
   if run_privileged "$installer_cmd" -pkg "$installer_package" -target / \
     >> "$installer_package_log" 2>&1; then
@@ -312,7 +316,9 @@ download_catalog_package() {
   fi
   record_phase installer_download "$download_started"
   [ -s "$package_path" ] || return 1
+  checksum_started=$(date +%s)
   package_sha=$(shasum -a 256 "$package_path" | awk '{print $1}')
+  record_phase installer_checksum "$checksum_started"
   printf '%s\n' "package=$package_path" "package_sha256=$package_sha" >> "$installer_package_log"
   pkg_started=$(date +%s)
   if run_privileged env CM_BUILD=CM_BUILD "$installer_cmd" -pkg "$package_path" -target / \

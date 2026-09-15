@@ -40,6 +40,13 @@ jobs:
       DISTILL_INSTALLER_SOFTWAREUPDATE_FALLBACK: "1"
       DISTILL_INSTALLER_DISCOVERY_TIMEOUT: "60"
       DISTILL_INSTALLER_CATALOG_CACHE: out/hvf/installer-catalog-cache.json
+      DISTILL_UNATTENDED_CAPTURE_DIR: out/hvf
+      DISTILL_UNATTENDED_FRAME_LOG: out/hvf/unattended-frames.jsonl
+      DISTILL_UNATTENDED_RECOVERY_MIN_SETTLE: "10"
+      DISTILL_UNATTENDED_RECOVERY_STILL_MAX: "240"
+      DISTILL_UNATTENDED_RECOVERY_STILL_FRAMES: "3"
+      DISTILL_UNATTENDED_RECOVERY_STILL_POLL: "3"
+      DISTILL_UNATTENDED_FRAME_INTERVAL: "60"
       DISTILL_BATCH_JSON: ${{ inputs.batch }}
       DISTILL_LEGACY_BOOTSTRAP: ${{ vars.DISTILL_LEGACY_BOOTSTRAP }}
       DISTILL_OPENCORE_DIR: ${{ vars.DISTILL_OPENCORE_DIR }}
@@ -338,6 +345,14 @@ jobs:
             out/hvf/installer.json
             out/hvf/installer-capabilities.json
             out/hvf/startosinstall-usage.txt
+            out/hvf/startosinstall-command.txt
+            out/hvf/startosinstall-package-info.txt
+            out/hvf/diskutil-list.txt
+            out/hvf/install-script.log
+            out/hvf/install-script.status
+            out/hvf/startosinstall.log
+            out/hvf/unattended-frames.jsonl
+            out/hvf/screen-*.ppm
             out/hvf/full-installers.txt
             out/hvf/installer-package.log
             out/hvf/installer-catalog-cache.json
@@ -371,8 +386,9 @@ jobs:
           printf '%s\n' '| Phase | Time |' '| --- | ---: |' >> "$GITHUB_STEP_SUMMARY"
           timing_file=out/hvf/phase-timings.json
           for phase in \
-            catalog_resolve installer_download installer_pkg_install installer_discovery \
-            install_media_prepare guest_boot guest_install guest_ssh_wait brew_bootstrap \
+            catalog_resolve installer_download installer_checksum installer_pkg_install installer_discovery \
+            install_media_prepare bootstrap_pkg_build installer_tree_copy install_media_dmg_create \
+            recovery_dmg_convert firmware_prepare guest_boot guest_install guest_ssh_wait brew_bootstrap \
             formula_build bottle_create bottle_upload bottle_verify; do
             seconds=0
             if [ -s "$timing_file" ]; then

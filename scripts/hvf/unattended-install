@@ -176,16 +176,26 @@ class Driver
     @disk_gib = disk_gib
     @command = command
     @output = output
+    @frame_path = frame_path
     @events = []
+    @capture_dir = ENV.fetch("DISTILL_UNATTENDED_CAPTURE_DIR", File.dirname(@output))
+    @frame_log = ENV.fetch("DISTILL_UNATTENDED_FRAME_LOG", File.join(@capture_dir, "unattended-frames.jsonl"))
+    FileUtils.mkdir_p(@capture_dir)
+    FileUtils.rm_f(@frame_log)
     @picker_timeout = env_number("DISTILL_UNATTENDED_PICKER_TIMEOUT", 600)
     @recovery_timeout = env_number("DISTILL_UNATTENDED_RECOVERY_TIMEOUT", 900)
-    @recovery_settle = env_number("DISTILL_UNATTENDED_RECOVERY_SETTLE", 240)
-    @recovery_still_max = env_number("DISTILL_UNATTENDED_RECOVERY_STILL_MAX", 600)
+    @recovery_min_settle = env_number(
+      "DISTILL_UNATTENDED_RECOVERY_MIN_SETTLE",
+      ENV.fetch("DISTILL_UNATTENDED_RECOVERY_SETTLE", "10")
+    )
+    @recovery_still_max = env_number("DISTILL_UNATTENDED_RECOVERY_STILL_MAX", 240)
     @recovery_still_frames = Integer(env_number("DISTILL_UNATTENDED_RECOVERY_STILL_FRAMES", 3))
+    @recovery_still_poll = env_number("DISTILL_UNATTENDED_RECOVERY_STILL_POLL", ENV.fetch("DISTILL_UNATTENDED_POLL", "6"))
     @picker_settle = env_number("DISTILL_UNATTENDED_PICKER_SETTLE", 2)
     @terminal_wait = env_number("DISTILL_UNATTENDED_TERMINAL_WAIT", 10)
     @install_reboot_timeout = env_number("DISTILL_UNATTENDED_INSTALL_REBOOT_TIMEOUT", 1800)
-    @install_reboot_grace = env_number("DISTILL_UNATTENDED_INSTALL_REBOOT_GRACE", 30)
+    @install_reboot_grace = env_number("DISTILL_UNATTENDED_INSTALL_REBOOT_GRACE", 5)
+    @frame_interval = env_number("DISTILL_UNATTENDED_FRAME_INTERVAL", 60)
     @done_quiet = env_number("DISTILL_UNATTENDED_DONE_QUIET", 120)
     @hung_still = env_number("DISTILL_UNATTENDED_HUNG_STILL", 600)
     @picker_repress = env_number("DISTILL_UNATTENDED_PICKER_REPRESS", 30)
@@ -196,13 +206,18 @@ class Driver
     @picker_frame = nil
     @recovery_frame = nil
     @guest_boot_seconds = nil
+    @started = nil
+    @command_entered_at = nil
+    @last_frame = nil
   end
 
-  def run
-    started = monotonic
+def run
+  @started = monotonic
+  started = @started
+  begin
     event "waiting for the OpenCore picker"
     @picker_frame = wait_for(@picker_timeout, "the OpenCore picker") do
-      frame = @monitor.frame
+      frame = capture_frame
       frame.visible ? frame : nil
     end
     @guest_boot_seconds = (monotonic - started).to_i
@@ -211,11 +226,10 @@ class Driver
 
     event "waiting for macOS recovery"
     @recovery_frame = wait_for(@recovery_timeout, "macOS recovery") do
-      frame = @monitor.frame
+      frame = capture_frame
       frame.visible && frame.digest != @picker_frame.digest ? frame : nil
     end
-    event "recovery loaded; settling #{@recovery_settle}s"
-    sleep @recovery_settle
+    event "recovery loaded; waiting for a stable screen"
     @recovery_frame = wait_until_still
 
     event "opening the recovery Terminal"
@@ -224,17 +238,15 @@ class Driver
       sleep @key_delay
     end
     sleep @terminal_wait
+    capture_and_save("screen-before-command.ppm")
     event "typing the erase and startosinstall command"
     type_text @command
+    capture_and_save("screen-after-typing.ppm")
     sleep 1
     send_key "ret"
-
-    event "waiting for the installer's first reboot"
-    sleep @install_reboot_grace
-    wait_for(@install_reboot_timeout, "the installer's first reboot") do
-      frame = @monitor.frame
-      picker_like?(frame) ? frame : nil
-    end
+    @command_entered_at = monotonic
+    event "startosinstall command submitted; waiting for first reboot"
+    wait_for_first_reboot
     event "first reboot reached; detaching the recovery disk"
     @monitor.command "stop"
     wait_for(120, "QEMU to pause") { @monitor.command("info status").match?(/paused/i) }
@@ -244,7 +256,6 @@ class Driver
     @monitor.command "cont"
 
     boots = 0
-    last_picker = monotonic
     last_change = monotonic
     last_press = monotonic - @picker_repress
     cycles = 0
@@ -252,7 +263,7 @@ class Driver
     waiting_for_guest_boot = false
     guest_boot_started = nil
     while monotonic - started < @total_budget
-      frame = @monitor.frame
+      frame = capture_frame
       digest = frame.digest
       changed = frame.valid? && digest != seen
       if changed
@@ -261,7 +272,6 @@ class Driver
       end
 
       if picker_like?(frame)
-        last_picker = monotonic
         if changed
           boots += 1
           sleep 2
@@ -282,8 +292,15 @@ class Driver
 
       if boots.positive? && guest_boot_started && monotonic - last_change >= @done_quiet
         elapsed = (monotonic - started).to_i
+        guest_install_seconds = (monotonic - @command_entered_at).to_i
         event "install finished after #{boots} reboot(s)"
-        write_result(reboots: boots, elapsed: elapsed, guest_boot_seconds: @guest_boot_seconds)
+        write_result(
+          reboots: boots,
+          elapsed: elapsed,
+          guest_boot_seconds: @guest_boot_seconds,
+          guest_install_seconds: guest_install_seconds,
+          status: "passed"
+        )
         return
       end
 
@@ -296,14 +313,29 @@ class Driver
         @monitor.command "stop"
         wait_for(120, "QEMU to pause") { @monitor.command("info status").match?(/paused/i) }
         @monitor.command "cont"
-        last_change = last_picker = monotonic
+        last_change = monotonic
         seen = ""
       end
       sleep @poll
     end
 
     raise UnattendedError, "install did not finish within #{@total_budget.to_i}s"
+  rescue UnattendedError => error
+    save_current_frame("screen-first-reboot-timeout.ppm") if @command_entered_at
+    event "install failed: #{error.message}"
+    elapsed = @started ? (monotonic - @started).to_i : 0
+    guest_install_seconds = @command_entered_at ? (monotonic - @command_entered_at).to_i : nil
+    write_result(
+      reboots: 0,
+      elapsed: elapsed,
+      guest_boot_seconds: @guest_boot_seconds,
+      guest_install_seconds: guest_install_seconds,
+      status: "failed",
+      error: error.message
+    )
+    raise
   end
+end
 
   private
 
@@ -316,6 +348,82 @@ class Driver
   def send_key(key)
     response = @monitor.command "sendkey #{key}"
     raise UnattendedError, "QEMU rejected key #{key}: #{response}" if response.match?(/error|unknown/i)
+  end
+
+  def capture_frame
+    frame = @monitor.frame
+    @last_frame = frame
+    record_frame(frame)
+    frame
+  end
+
+  def capture_and_save(name)
+    frame = capture_frame
+    save_current_frame(name)
+    frame
+  end
+
+  def save_current_frame(name)
+    return unless File.file?(@frame_path)
+
+    FileUtils.cp(@frame_path, File.join(@capture_dir, name))
+  rescue Errno::ENOENT
+    nil
+  end
+
+  def record_frame(frame)
+    picker_distance = @picker_frame && frame.distance(@picker_frame)
+    recovery_distance = @recovery_frame && frame.distance(@recovery_frame)
+    record = {
+      timestamp: Time.now.utc.iso8601(3),
+      elapsed_seconds: @started && (monotonic - @started).round(3),
+      width: frame.width,
+      height: frame.height,
+      digest: frame.digest,
+      size: frame.size,
+      visible: frame.visible,
+      picker_distance: finite_metric(picker_distance),
+      recovery_distance: finite_metric(recovery_distance),
+      picker_like: picker_like?(frame)
+    }
+    File.open(@frame_log, "a") { |stream| stream.puts(JSON.generate(record)) }
+  end
+
+  def finite_metric(value)
+    value&.finite? ? value.round(3) : nil
+  end
+
+  def wait_for_first_reboot
+    deadline = @command_entered_at + @install_reboot_timeout
+    checkpoints = {
+      5.0 => "screen-after-command-5s.ppm",
+      30.0 => "screen-after-command-30s.ppm",
+      60.0 => "screen-after-command-60s.ppm"
+    }
+    next_periodic = @frame_interval
+    loop do
+      frame = capture_frame
+      elapsed = monotonic - @command_entered_at
+      checkpoints.each do |second, name|
+        if elapsed >= second
+          save_current_frame(name)
+          checkpoints.delete(second)
+        end
+      end
+      while @frame_interval.positive? && elapsed >= next_periodic
+        save_current_frame("screen-first-reboot-#{next_periodic.to_i}s.ppm")
+        next_periodic += @frame_interval
+      end
+      if elapsed >= @install_reboot_grace && picker_like?(frame)
+        save_current_frame("screen-first-reboot.ppm")
+        return frame
+      end
+      raise UnattendedError, "timed out after #{@install_reboot_timeout.to_i}s waiting for the installer first reboot" if monotonic >= deadline
+      sleep [@poll, deadline - monotonic].min
+    end
+  rescue UnattendedError
+    save_current_frame("screen-first-reboot-timeout.ppm")
+    raise
   end
 
   def picker_like?(frame)
@@ -350,15 +458,18 @@ class Driver
   end
 
   def wait_until_still
-    deadline = monotonic + @recovery_still_max
-    previous = @monitor.frame
+    started = monotonic
+    deadline = started + @recovery_still_max
+    minimum_deadline = started + @recovery_min_settle
+    previous = capture_frame
     still = 1
     while monotonic < deadline
-      sleep @poll
-      current = @monitor.frame
+      remaining = deadline - monotonic
+      sleep [@recovery_still_poll, remaining].min if remaining.positive?
+      current = capture_frame
       if current.valid? && current.digest == previous.digest
         still += 1
-        return current if still >= @recovery_still_frames
+        return current if still >= @recovery_still_frames && monotonic >= minimum_deadline
       else
         previous = current
         still = 1
@@ -368,7 +479,7 @@ class Driver
     previous
   end
 
-  def write_result(reboots:, elapsed:, guest_boot_seconds:)
+  def write_result(reboots:, elapsed:, guest_boot_seconds:, guest_install_seconds:, status:, error: nil)
     FileUtils.mkdir_p(File.dirname(@output))
     picker_resolution = @picker_frame && @picker_frame.dimensions
     recovery_resolution = @recovery_frame && @recovery_frame.dimensions
@@ -378,8 +489,11 @@ class Driver
         schema: 1,
         disk_gib: @disk_gib,
         reboots: reboots,
+        status: status,
+        error: error,
         elapsed_seconds: elapsed,
         guest_boot_seconds: guest_boot_seconds,
+        guest_install_seconds: guest_install_seconds,
         picker_resolution: picker_resolution,
         recovery_resolution: recovery_resolution,
         events: @events

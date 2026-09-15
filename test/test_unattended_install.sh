@@ -51,9 +51,9 @@ File.open(command_log, "w") do |log|
                when /\Ascreendump (.+)\z/
                  screendumps += 1
                  case screendumps
-                 when 1, 5, 6
+                 when 1, 5, 6, 8, 9
                    write_frame(Regexp.last_match(1), 64, 36, 220, 220, 220)
-                 when 2..4, 7..100
+                 when 2..4, 7, 10..100
                    write_frame(Regexp.last_match(1), 32, 18, 20, 20, 220)
                  end
                  ""
@@ -101,8 +101,12 @@ if ! DISTILL_UNATTENDED_FRAME_WAIT=0 \
   exit 1
 fi
 
-jq -e '.schema == 1 and .reboots == 1 and any(.events[]; contains("install finished"))' \
+jq -e '.schema == 1 and .status == "passed" and .guest_install_seconds >= 0 and .reboots == 1 and any(.events[]; contains("install finished"))' \
   "$output" >/dev/null
+test -s "$test_dir/screen-before-command.ppm"
+test -s "$test_dir/screen-after-typing.ppm"
+test -s "$test_dir/screen-first-reboot.ppm"
+test -s "$test_dir/unattended-frames.jsonl"
 grep -Fqx -- 'sendkey ctrl-f2' "$commands"
 grep -Fqx -- 'sendkey e' "$commands"
 grep -Fqx -- 'sendkey ret' "$commands"

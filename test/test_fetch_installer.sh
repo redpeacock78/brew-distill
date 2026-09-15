@@ -125,7 +125,7 @@ jq -e '.version == "13.7.8" and .product_id == "test-product-13-7-8" and .source
   "$test_dir/out/installer-catalog-cache.json" >/dev/null
 grep -Fqx -- 'catalog package installed' "$test_dir/out/installer-package.log"
 grep -Fqx -- 'downloader=aria2c' "$test_dir/out/installer-package.log"
-jq -e 'all(.phases; .catalog_resolve >= 0 and .installer_download >= 0 and .installer_pkg_install >= 0 and .installer_discovery >= 0)' \
+jq -e 'all(.phases; .catalog_resolve >= 0 and .installer_download >= 0 and .installer_checksum >= 0 and .installer_pkg_install >= 0 and .installer_discovery >= 0)' \
   "$test_dir/out/phase-timings.json" >/dev/null
 
 mkdir -p "$test_dir/cache-applications" "$test_dir/cache-out"

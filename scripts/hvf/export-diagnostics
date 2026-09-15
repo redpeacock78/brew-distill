@@ -24,6 +24,11 @@ find "$output_dir" -type f \( \
   -o -name 'qemu.log' -o -name 'opencore.log' -o -name 'guest-console.log' \
   -o -name 'guest-info.*' -o -name 'guest-*.json' -o -name '*.guest-*.json' \
   -o -name 'startosinstall-usage.txt' \
+  -o -name 'startosinstall-command.txt' -o -name 'startosinstall-package-info.txt' \
+  -o -name 'diskutil-list.txt' -o -name 'install-script.log' \
+  -o -name 'install-script.status' -o -name 'startosinstall.log' \
+  -o -name 'unattended-frames.jsonl' -o -name 'screen-*.ppm' \
+  -o -name 'phase-timings.json' \
   -o -name 'full-installers.txt' \
   -o -name 'installer.json' -o -name 'installer-capabilities.json' \
   -o -name 'opencore.json' -o -name 'opencore-disk.json' -o -name 'ssh-ready.json' \

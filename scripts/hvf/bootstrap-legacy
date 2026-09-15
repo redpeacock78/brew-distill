@@ -29,6 +29,9 @@ qemu_img=${QEMU_IMG:-qemu-img}
 plutil_cmd=${DISTILL_PLUTIL:-plutil}
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-legacy-bootstrap.XXXXXX")
 qemu_pid=
+install_media=
+
+mkdir -p "$output_dir"
 
 case "$guest_user" in
   ''|*[!A-Za-z0-9._-]*)
@@ -42,6 +45,18 @@ cleanup() {
   if [ -n "$qemu_pid" ] && kill -0 "$qemu_pid" 2>/dev/null; then
     kill -TERM "$qemu_pid" 2>/dev/null || true
     wait "$qemu_pid" 2>/dev/null || true
+  fi
+  if [ -n "$install_media" ] && [ -f "$install_media" ]; then
+    media_mount="$work_dir/install-media-diagnostics"
+    mkdir -p "$media_mount"
+    if hdiutil attach -readonly -nobrowse -mountpoint "$media_mount" "$install_media" >/dev/null 2>&1; then
+      for media_file in diskutil-list.txt install-script.log install-script.status startosinstall.log; do
+        if [ -f "$media_mount/$media_file" ]; then
+          cp "$media_mount/$media_file" "$output_dir/$media_file"
+        fi
+      done
+      hdiutil detach "$media_mount" >/dev/null 2>&1 || true
+    fi
   fi
   rm -rf "$work_dir"
   exit "$status"
@@ -75,7 +90,7 @@ command -v "$plutil_cmd" >/dev/null 2>&1 || {
   printf '%s\n' "bootstrap-legacy: plutil is required" >&2
   exit 1
 }
-for tool in "$qemu_bin" "$qemu_img" brew curl hdiutil jq openssl pkgbuild shasum; do
+for tool in "$qemu_bin" "$qemu_img" brew curl hdiutil jq openssl pkgbuild productbuild pkgutil shasum; do
   command -v "$tool" >/dev/null 2>&1 || {
     printf '%s\n' "bootstrap-legacy: required tool is unavailable: $tool" >&2
     exit 1
@@ -124,6 +139,10 @@ nointeraction_arg=
 if capability nointeraction; then
   nointeraction_arg=' --nointeraction'
 fi
+rebootdelay_arg=
+if capability rebootdelay; then
+  rebootdelay_arg=' --rebootdelay 0'
+fi
 
 base_system="$installer/Contents/SharedSupport/BaseSystem.dmg"
 if [ ! -f "$base_system" ]; then
@@ -170,9 +189,8 @@ test -n "$guest_password" || {
 }
 
 pkg_root="$work_dir/pkg-root"
-pkg_scripts="$work_dir/pkg-scripts"
 install_media_started=$(date +%s)
-mkdir -p "$pkg_root/usr/local/libexec" "$pkg_root/Library/LaunchDaemons" "$pkg_scripts"
+mkdir -p "$pkg_root/usr/local/libexec" "$pkg_root/Library/LaunchDaemons"
 cp "$public_key" "$pkg_root/usr/local/libexec/brew-distill-guest-key"
 cp "$repo_dir/scripts/hvf/provision-ssh" "$pkg_root/usr/local/libexec/brew-distill-provision-ssh"
 chmod 644 "$pkg_root/usr/local/libexec/brew-distill-guest-key"
@@ -223,20 +241,90 @@ cat > "$pkg_root/Library/LaunchDaemons/org.brew-distill.firstboot.plist" <<'PLIS
 </plist>
 PLIST
 
+bootstrap_component_pkg="$work_dir/brew-distill-bootstrap-component.pkg"
 bootstrap_pkg="$work_dir/brew-distill-bootstrap.pkg"
+bootstrap_pkg_started=$(date +%s)
 pkgbuild --root "$pkg_root" --identifier org.brew-distill.bootstrap \
-  --version 1 --install-location / "$bootstrap_pkg" >/dev/null
+  --version 1 --install-location / "$bootstrap_component_pkg" >/dev/null
+distribution="$work_dir/Distribution"
+productbuild --synthesize --package "$bootstrap_component_pkg" "$distribution"
+productbuild --distribution "$distribution" --package-path "$work_dir" "$bootstrap_pkg" >/dev/null
+record_timing bootstrap_pkg_build "$bootstrap_pkg_started"
+
+package_info="$output_dir/startosinstall-package-info.txt"
+package_expanded="$work_dir/bootstrap-product-expanded"
+{
+  printf '%s\n' "component_package=$bootstrap_component_pkg" "product_package=$bootstrap_pkg"
+  printf '%s\n' '[component payload]'
+  pkgutil --payload-files "$bootstrap_component_pkg" 2>&1 || true
+  printf '%s\n' '[product payload]'
+  pkgutil --payload-files "$bootstrap_pkg" 2>&1 || true
+  printf '%s\n' '[product signature]'
+  pkgutil --check-signature "$bootstrap_pkg" 2>&1 || true
+  if pkgutil --expand "$bootstrap_pkg" "$package_expanded" >/dev/null 2>&1; then
+    printf '%s\n' '[expanded product files]'
+    find "$package_expanded" -maxdepth 3 -type f -print | sort
+  fi
+} > "$package_info"
 
 media_root="$work_dir/install-media-root"
 mkdir -p "$media_root"
+installer_tree_started=$(date +%s)
 cp -R "$installer"/. "$media_root/"
+record_timing installer_tree_copy "$installer_tree_started"
 cp "$bootstrap_pkg" "$media_root/brew-distill-bootstrap.pkg"
+install_script="$media_root/brew-distill-install"
+cat > "$install_script" <<EOF
+#!/bin/sh
+set -eux
+
+log=/Volumes/InstallMedia/install-script.log
+exec >> "\$log" 2>&1
+
+diskutil list > /Volumes/InstallMedia/diskutil-list.txt 2>&1
+cat /Volumes/InstallMedia/diskutil-list.txt
+d=\$(diskutil list | awk '
+/GUID_partition_scheme/ {
+  size=\$3
+  sub(/^\\*/, "", size)
+  gsub(/,/, ".", size)
+  if ((size + 0) > largest) {
+    largest=size + 0
+    disk=\$NF
+  }
+}
+END {
+  if (disk != "") print disk
+')
+printf 'TARGET_DISK=%s\\n' "\$d"
+test -n "\$d"
+diskutil eraseDisk APFS MACOS "\$d"
+printf '%s\\n' "STARTOSINSTALL_BEGIN \$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+set +e
+/Volumes/InstallMedia/Contents/Resources/startosinstall \\
+  --agreetolicense$install_target_args$nointeraction_arg$rebootdelay_arg \\
+  --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg \\
+  > /Volumes/InstallMedia/startosinstall.log 2>&1
+status=\$?
+set -e
+printf '%s\\n' "STARTOSINSTALL_STATUS=\$status"
+printf '%s\\n' "\$status" > /Volumes/InstallMedia/install-script.status
+exit "\$status"
+EOF
+chmod 755 "$install_script"
+command_file="$output_dir/startosinstall-command.txt"
+cp "$install_script" "$command_file"
+chmod 644 "$command_file"
 install_media="$work_dir/install-media.dmg"
+install_media_dmg_started=$(date +%s)
 hdiutil create -srcfolder "$media_root" -format UDRW -volname InstallMedia \
   -ov "$install_media" >/dev/null
+record_timing install_media_dmg_create "$install_media_dmg_started"
 
 recovery_output="$work_dir/recovery"
+recovery_dmg_started=$(date +%s)
 hdiutil convert "$base_system" -format UDRW -o "$recovery_output" >/dev/null
+record_timing recovery_dmg_convert "$recovery_dmg_started"
 recovery="$recovery_output"
 if [ ! -f "$recovery" ] && [ -f "$recovery.dmg" ]; then
   recovery="$recovery.dmg"
@@ -246,16 +334,10 @@ test -s "$recovery" || {
   exit 1
 }
 
-disk_size=$(awk -v gib="$disk_gib" 'BEGIN { printf "%.1f", gib * 1.073741824 }')
-escaped_disk_size=$(printf '%s' "$disk_size" | sed 's/\\./\\\\./')
-command_file="$work_dir/install-command.txt"
-cat > "$command_file" <<EOF
-d=\$(diskutil list | awk '/\\*$escaped_disk_size GB/{print \$NF; exit}') && diskutil eraseDisk APFS MACOS \$d && /Volumes/InstallMedia/Contents/Resources/startosinstall --agreetolicense$install_target_args$nointeraction_arg --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg
-EOF
-
 monitor="$work_dir/qemu-monitor.sock"
 qemu_code=
 qemu_vars=
+firmware_started=$(date +%s)
 qemu_prefix=$(brew --prefix qemu 2>/dev/null || true)
 for firmware_dir in \
   "${DISTILL_QEMU_FIRMWARE_DIR:-}" \
@@ -330,6 +412,7 @@ if printf '%s' "$qemu_args" | jq -e 'any(.[]; contains("{{QEMU_VARS}}"))' >/dev/
   cp "$qemu_vars" "$vars_copy"
   qemu_vars="$vars_copy"
 fi
+record_timing firmware_prepare "$firmware_started"
 
 runtime_args_json=$(
   printf '%s' "$qemu_args" | jq \
@@ -414,7 +497,9 @@ qemu_pid=$!
 
 unattended_started=$(date +%s)
 set +e
-"$unattended" --monitor "$monitor" --disk-gib "$disk_gib" \
+DISTILL_UNATTENDED_CAPTURE_DIR="$output_dir" \
+DISTILL_UNATTENDED_FRAME_LOG="$output_dir/unattended-frames.jsonl" \
+  "$unattended" --monitor "$monitor" --disk-gib "$disk_gib" \
   --command-file "$command_file" --output "$output_dir/unattended-install.json" \
   --frame "$work_dir/frame.ppm" \
   > "$output_dir/unattended-install.log" 2>&1
@@ -422,7 +507,7 @@ unattended_status=$?
 set -e
 if [ -s "$output_dir/unattended-install.json" ]; then
   guest_boot_seconds=$(jq -r '.guest_boot_seconds // empty' "$output_dir/unattended-install.json" || true)
-  guest_install_seconds=$(jq -r '.elapsed_seconds // empty' "$output_dir/unattended-install.json" || true)
+  guest_install_seconds=$(jq -r '.guest_install_seconds // .elapsed_seconds // empty' "$output_dir/unattended-install.json" || true)
   case "$guest_boot_seconds" in
     ''|*[!0-9]*) guest_boot_seconds=$(( $(date +%s) - guest_boot_started )) ;;
   esac
