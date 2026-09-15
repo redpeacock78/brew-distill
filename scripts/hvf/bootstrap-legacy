@@ -58,6 +58,7 @@ for path in "$installer" "$base" "$opencore_dir" "$public_key"; do
     exit 1
   }
 done
+base=$(cd -- "$(dirname -- "$base")" && pwd)/$(basename -- "$base")
 test -x "$guest_ssh_cmd" || {
   printf '%s\n' "bootstrap-legacy: guest SSH wrapper is unavailable: $guest_ssh_cmd" >&2
   exit 1
