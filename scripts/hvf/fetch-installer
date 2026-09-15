@@ -92,24 +92,50 @@ $HOME/Applications"
     installer_location="/Applications or $HOME/Applications"
   fi
 fi
-installer=
-while IFS= read -r installer_root; do
-  [ -d "$installer_root" ] || continue
-  while IFS= read -r candidate; do
-    candidate_version=$(
-      "$plutil_cmd" -extract CFBundleShortVersionString raw -o - \
-        "$candidate/Contents/Info.plist" 2>/dev/null || true
-    )
-    if [ "$candidate_version" = "$version" ]; then
-      installer=$candidate
-    fi
-  done <<EOF
-$(find "$installer_root" -maxdepth 1 -type d -name 'Install macOS *.app' -print | sort)
+find_installer() {
+  while IFS= read -r search_root; do
+    [ -d "$search_root" ] || continue
+    while IFS= read -r candidate; do
+      candidate_version=$(
+        "$plutil_cmd" -extract CFBundleShortVersionString raw -o - \
+          "$candidate/Contents/Info.plist" 2>/dev/null || true
+      )
+      if [ "$candidate_version" = "$version" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    done <<EOF
+$(find "$search_root" -maxdepth 1 -type d -name 'Install macOS *.app' -print | sort)
 EOF
-  [ -n "$installer" ] && break
-done <<EOF
+  done <<EOF
 $installer_roots
 EOF
+  return 1
+}
+installer=
+discovery_timeout=${DISTILL_INSTALLER_DISCOVERY_TIMEOUT:-300}
+discovery_poll=${DISTILL_INSTALLER_DISCOVERY_POLL:-5}
+case "$discovery_timeout" in
+  ''|*[!0-9]*|0)
+    printf '%s\n' "fetch-installer: DISTILL_INSTALLER_DISCOVERY_TIMEOUT must be a positive integer" >&2
+    exit 2
+    ;;
+esac
+case "$discovery_poll" in
+  ''|*[!0-9]*|0)
+    printf '%s\n' "fetch-installer: DISTILL_INSTALLER_DISCOVERY_POLL must be a positive integer" >&2
+    exit 2
+    ;;
+esac
+discovery_started=$(date +%s)
+printf '%s\n' "fetch-installer: waiting up to ${discovery_timeout}s for the installer app" >&2
+while [ -z "$installer" ]; do
+  installer=$(find_installer || true)
+  [ -n "$installer" ] && break
+  elapsed=$(( $(date +%s) - discovery_started ))
+  [ "$elapsed" -ge "$discovery_timeout" ] && break
+  sleep "$discovery_poll"
+done
 [ -n "$installer" ] || {
   printf '%s\n' "fetch-installer: no Install macOS app with version $version found in $installer_location; see $available_file" >&2
   exit 1
