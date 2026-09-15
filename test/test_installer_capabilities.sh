@@ -19,6 +19,6 @@ chmod 755 "$test_dir/Install macOS Test.app/Contents/Resources/startosinstall"
   "$test_dir/Install macOS Test.app" "$test_dir/out" >/dev/null
 jq -e '.usage_status == 0 and .options.agreetolicense == true and .options.volume == true' \
   "$test_dir/out/installer-capabilities.json" >/dev/null
-grep -Fqx -- '--eraseinstall' "$test_dir/out/startosinstall-usage.txt"
+grep -Fq -- '--eraseinstall,' "$test_dir/out/startosinstall-usage.txt"
 
 printf '%s\n' "ok"

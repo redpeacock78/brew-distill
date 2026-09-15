@@ -27,7 +27,7 @@ usage_status=0
 "$startosinstall" --usage > "$usage_file" 2>&1 || usage_status=$?
 
 has_option() {
-  grep -Eq -- "(^|[[:space:]])$1([[:space:]]|$)" "$usage_file"
+  grep -Eq -- "(^|[[:space:]])$1([[:space:],]|$)" "$usage_file"
 }
 
 agreetolicense=0
