@@ -13,6 +13,8 @@ trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$test_dir/out"
 test -x "$repo_dir/scripts/hvf/fetch-recovery"
+grep -F -- 'public_key_fingerprint' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'firstboot.log' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 python3 -c 'import pathlib, sys; path = pathlib.Path(sys.argv[1]); compile(path.read_text(encoding="utf-8"), str(path), "exec")' \
   "$repo_dir/scripts/hvf/fetch-recovery"
 DISTILL_DISK_CANDIDATES='' DISTILL_MIN_FREE_GIB=0 \

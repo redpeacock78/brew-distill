@@ -28,6 +28,8 @@ guest_ssh_cmd="$repo_dir/scripts/hvf/guest-ssh"
 unattended="$repo_dir/scripts/hvf/unattended-install"
 fetch_recovery="$repo_dir/scripts/hvf/fetch-recovery"
 public_key=${DISTILL_GUEST_SSH_PUBLIC_KEY_FILE:-}
+ssh_identity=${DISTILL_GUEST_SSH_IDENTITY:-}
+require_ssh_identity=${DISTILL_REQUIRE_GUEST_SSH_IDENTITY:-0}
 qemu_args=${DISTILL_QEMU_ARGS_JSON:-}
 qemu_code_url=${DISTILL_QEMU_CODE_URL:-}
 qemu_code_sha=${DISTILL_QEMU_CODE_SHA256:-}
@@ -45,6 +47,13 @@ mkdir -p "$output_dir"
 case "$guest_user" in
   ''|*[!A-Za-z0-9._-]*)
     printf '%s\n' "bootstrap-legacy: invalid guest user: $guest_user" >&2
+    exit 2
+    ;;
+esac
+case "$require_ssh_identity" in
+  0|1) ;;
+  *)
+    printf '%s\n' "bootstrap-legacy: DISTILL_REQUIRE_GUEST_SSH_IDENTITY must be 0 or 1" >&2
     exit 2
     ;;
 esac
@@ -79,12 +88,25 @@ if [ "$(uname -s)" != "Darwin" ]; then
   printf '%s\n' "bootstrap-legacy: host-side bootstrap requires macOS" >&2
   exit 1
 fi
-for path in "$installer" "$base" "$opencore_dir" "$public_key"; do
+for path in "$installer" "$base" "$opencore_dir"; do
   test -e "$path" || {
     printf '%s\n' "bootstrap-legacy: required input is unavailable: $path" >&2
     exit 1
   }
 done
+test -f "$public_key" || {
+  printf '%s\n' "bootstrap-legacy: guest SSH public key is unavailable: $public_key" >&2
+  exit 1
+}
+if [ -n "$ssh_identity" ]; then
+  test -r "$ssh_identity" || {
+    printf '%s\n' "bootstrap-legacy: guest SSH identity is unavailable: $ssh_identity" >&2
+    exit 1
+  }
+elif [ "$require_ssh_identity" = "1" ]; then
+  printf '%s\n' "bootstrap-legacy: guest SSH identity is required" >&2
+  exit 1
+fi
 base=$(cd -- "$(dirname -- "$base")" && pwd)/$(basename -- "$base")
 test -x "$guest_ssh_cmd" || {
   printf '%s\n' "bootstrap-legacy: guest SSH wrapper is unavailable: $guest_ssh_cmd" >&2
@@ -106,12 +128,17 @@ command -v "$plutil_cmd" >/dev/null 2>&1 || {
   printf '%s\n' "bootstrap-legacy: plutil is required" >&2
   exit 1
 }
-for tool in "$qemu_bin" "$qemu_img" brew curl hdiutil jq openssl pkgbuild productbuild pkgutil python3 shasum; do
+for tool in "$qemu_bin" "$qemu_img" brew curl hdiutil jq openssl pkgbuild productbuild pkgutil python3 shasum ssh-keygen; do
   command -v "$tool" >/dev/null 2>&1 || {
     printf '%s\n' "bootstrap-legacy: required tool is unavailable: $tool" >&2
     exit 1
   }
 done
+expected_ssh_fingerprint=$(ssh-keygen -lf "$public_key" 2>/dev/null | awk 'NR == 1 {print $2}')
+test -n "$expected_ssh_fingerprint" || {
+  printf '%s\n' "bootstrap-legacy: guest SSH public key is invalid" >&2
+  exit 2
+}
 mkdir -p "$output_dir"
 timing_recorder="$repo_dir/scripts/hvf/record-timing"
 timing_file=${DISTILL_PHASE_TIMINGS:-$output_dir/phase-timings.json}
@@ -213,6 +240,9 @@ password=$guest_password
 key=/usr/local/libexec/brew-distill-guest-key
 output=/var/tmp/brew-distill
 sudoers=/private/etc/sudoers.d/brew-distill
+
+/bin/mkdir -p "\$output"
+exec >> "\$output/firstboot.log" 2>&1
 
 if ! /usr/bin/id "\$user" >/dev/null 2>&1; then
   /usr/sbin/sysadminctl -addUser "\$user" -fullName "Distill Builder" -password "\$password" -admin
@@ -556,6 +586,17 @@ scp_guest() {
   "$guest_ssh_cmd" scp "$port" "$@"
 }
 scp_guest "$target:/var/tmp/brew-distill/ssh-ready.json" "$output_dir/ssh-ready.json"
+guest_ssh cat /var/tmp/brew-distill/firstboot.log > "$output_dir/firstboot.log"
+ssh_ready_fingerprint=$(jq -r '.public_key_fingerprint // empty' "$output_dir/ssh-ready.json")
+test "$ssh_ready_fingerprint" = "$expected_ssh_fingerprint" || {
+  printf '%s\n' "bootstrap-legacy: guest SSH public key fingerprint mismatch" >&2
+  exit 1
+}
+guest_ssh_user=$(jq -r '.user // empty' "$output_dir/ssh-ready.json")
+test "$guest_ssh_user" = "$guest_user" || {
+  printf '%s\n' "bootstrap-legacy: guest SSH user mismatch" >&2
+  exit 1
+}
 guest_ssh sudo -n true
 
 brew_started=$(date +%s)
@@ -622,6 +663,7 @@ guest_ssh sudo -n rm -f \
   /usr/local/libexec/brew-distill-firstboot \
   /usr/local/libexec/brew-distill-guest-key \
   /usr/local/libexec/brew-distill-provision-ssh \
+  /var/tmp/brew-distill/firstboot.log \
   /var/tmp/brew-distill/homebrew-install.sh \
   /private/etc/sudoers.d/brew-distill \
   /var/db/brew-distill-bootstrap.done

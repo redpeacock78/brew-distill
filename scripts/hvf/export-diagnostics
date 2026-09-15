@@ -35,6 +35,7 @@ find "$output_dir" -type f \( \
   -o -name 'full-installers.txt' \
   -o -name 'installer.json' -o -name 'installer-capabilities.json' \
   -o -name 'opencore.json' -o -name 'opencore-disk.json' -o -name 'ssh-ready.json' \
+  -o -name 'firstboot.log' \
   -o -name 'legacy-bootstrap.json' -o -name 'unattended-install.json' \
   -o -name 'unattended-install.log' -o -name 'homebrew-install.log' \
   -o -name 'homebrew-bootstrap.log' -o -name 'brew-version.txt' \

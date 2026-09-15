@@ -365,6 +365,7 @@ jobs:
             out/hvf/base-check.txt
             out/hvf/opencore-disk.json
             out/hvf/ssh-ready.json
+            out/hvf/firstboot.log
             out/hvf/legacy-bootstrap.json
             out/hvf/unattended-install.json
             out/hvf/unattended-install.log
