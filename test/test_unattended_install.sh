@@ -40,6 +40,18 @@ def write_frame(path, width, height, red, green, blue)
   File.binwrite(path, "P6\n#{width} #{height}\n255\n" + (pixel * (width * height)))
 end
 
+def write_boot_progress_frame(path, width, height)
+  header = "P6\n#{width} #{height}\n255\n"
+  data = ("\0" * (width * height * 3)).b
+  [[8, 16, 255], [8, 17, 255], [9, 16, 10], [9, 17, 10]].each do |row, column, value|
+    x = column * width / 32
+    y = row * height / 18
+    pixel = (y * width + x) * 3
+    3.times { |channel| data.setbyte(pixel + channel, value) }
+  end
+  File.binwrite(path, header + data)
+end
+
 def write_uefi_shell_frame(path, width, height)
   header = "P6\n#{width} #{height}\n255\n"
   data = ("\0" * (width * height * 3)).b
@@ -67,9 +79,11 @@ File.open(command_log, "w") do |log|
                    write_uefi_shell_frame(Regexp.last_match(1), 64, 36)
                  else
                    case screendumps
-                   when 1, 5, 6, 8, 9
+                   when 1, 8..11
                      write_frame(Regexp.last_match(1), 64, 36, 220, 220, 220)
-                   when 2..4, 7, 10..100
+                   when 2..4
+                     write_boot_progress_frame(Regexp.last_match(1), 64, 36)
+                   when 5..7, 12..100
                      write_frame(Regexp.last_match(1), 32, 18, 20, 20, 220)
                    end
                  end
@@ -123,6 +137,7 @@ jq -e '.schema == 1 and .status == "passed" and .guest_install_seconds >= 0 and 
 test -s "$test_dir/screen-before-command.ppm"
 test -s "$test_dir/screen-after-typing.ppm"
 test -s "$test_dir/screen-first-reboot.ppm"
+awk 'NR == 2 { print }' "$test_dir/screen-recovery.ppm" | grep -Fx '32 18'
 test -s "$test_dir/unattended-frames.jsonl"
 jq -s -e 'all(.[]; .uefi_shell_like == false)' "$test_dir/unattended-frames.jsonl" >/dev/null
 grep -Fqx -- 'sendkey ctrl-f2' "$commands"

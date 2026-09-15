@@ -53,6 +53,14 @@ Frame = Struct.new(
     nonblack <= 12 && bright >= 4 && bright_rows >= 2
   end
 
+  def recovery_ui_like?
+    return false unless visible && signature.length >= 30
+
+    nonblack = signature.each_slice(3).count { |red, green, blue| red + green + blue > 24 }
+    # ponytail: coarse sampled UI gate; replace with a guest-level readiness signal if one becomes available.
+    nonblack > 12 && !uefi_shell_like?
+  end
+
   def self.empty
     new(size: 0, digest: "", width: 0, height: 0, visible: false, signature: [])
   end
@@ -249,7 +257,7 @@ def run
         next nil
       end
       uefi_shell_frames = 0
-      frame.visible && frame.digest != @picker_frame.digest ? frame : nil
+      frame.recovery_ui_like? && frame.digest != @picker_frame.digest ? frame : nil
     end
     event "recovery loaded; waiting for a stable screen"
     @recovery_frame = wait_until_still
