@@ -12,6 +12,9 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$test_dir/out"
+test -x "$repo_dir/scripts/hvf/fetch-recovery"
+python3 -c 'import pathlib, sys; path = pathlib.Path(sys.argv[1]); compile(path.read_text(encoding="utf-8"), str(path), "exec")' \
+  "$repo_dir/scripts/hvf/fetch-recovery"
 DISTILL_DISK_CANDIDATES='' DISTILL_MIN_FREE_GIB=0 \
   "$repo_dir/scripts/hvf/reclaim-disk" "$test_dir/out" report >/dev/null
 jq -e '.mode == "report" and .paths == []' "$test_dir/out/reclaim.json" >/dev/null
@@ -149,6 +152,8 @@ test -s "$test_dir/artifacts/verified.txt"
 test ! -e "$test_dir/artifacts/verify-overlays/good-fresh.qcow2"
 jq -e '.phases.formula_build >= 0 and .phases.bottle_verify >= 0' \
   "$test_dir/out/phase-timings.json" >/dev/null
+"$repo_dir/scripts/hvf/record-timing" "$test_dir/out/phase-timings.json" recovery_image_download 0
+jq -e '.phases.recovery_image_download == 0' "$test_dir/out/phase-timings.json" >/dev/null
 
 printf '%s\n' host > "$test_dir/out/host-info.json"
 "$repo_dir/scripts/hvf/export-diagnostics" "$test_dir/out" "$test_dir/diagnostics.tar.gz" >/dev/null

@@ -98,6 +98,7 @@ fi
 if [ -f "$opencore_disk" ]; then
   export DISTILL_OPENCORE_DISK="$opencore_disk"
 fi
+export DISTILL_MACOS_MAJOR="$major"
 "$bootstrap" "$installer" "$base" "$hvf_dir/opencore" "$hvf_dir"
 test -f "$base" || {
   printf '%s\n' "legacy-poc: bootstrap hook did not return a base image" >&2

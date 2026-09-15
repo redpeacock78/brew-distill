@@ -348,9 +348,13 @@ jobs:
             out/hvf/startosinstall-command.txt
             out/hvf/startosinstall-package-info.txt
             out/hvf/diskutil-list.txt
+            out/hvf/target-disk-info.txt
             out/hvf/install-script.log
             out/hvf/install-script.status
             out/hvf/startosinstall.log
+            out/hvf/install-media-attach.log
+            out/hvf/recovery-image.json
+            out/hvf/recovery-download.log
             out/hvf/unattended-frames.jsonl
             out/hvf/screen-*.ppm
             out/hvf/full-installers.txt
@@ -387,7 +391,7 @@ jobs:
           timing_file=out/hvf/phase-timings.json
           for phase in \
             catalog_resolve installer_download installer_checksum installer_pkg_install installer_discovery \
-            install_media_prepare bootstrap_pkg_build installer_tree_copy install_media_dmg_create \
+            recovery_image_download install_media_prepare bootstrap_pkg_build installer_tree_copy install_media_dmg_create \
             recovery_dmg_convert firmware_prepare guest_boot guest_install guest_ssh_wait brew_bootstrap \
             formula_build bottle_create bottle_upload bottle_verify; do
             seconds=0

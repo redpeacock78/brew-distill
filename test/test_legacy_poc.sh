@@ -89,6 +89,7 @@ cat > "$test_dir/bootstrap" <<'EOF'
 #!/bin/sh
 set -eu
 test "$#" -eq 4
+test "${DISTILL_MACOS_MAJOR:-}" = 13
 test -f "$2"
 printf '%s\n' bootstrapped > "$2"
 printf '%s\n' '{"schema":1,"qemu_args":["-accel","hvf"],"vm_image":false}' > "$4/.qemu-runtime.json"

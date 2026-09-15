@@ -13,11 +13,20 @@ base=$2
 opencore_dir=$3
 output_dir=$4
 repo_dir=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+major=${DISTILL_MACOS_MAJOR:-${DISTILL_MACOS:-}}
+case "$major" in
+  11|12|13|14) ;;
+  *)
+    printf '%s\n' "bootstrap-legacy: DISTILL_MACOS_MAJOR or DISTILL_MACOS must be 11, 12, 13, or 14" >&2
+    exit 2
+    ;;
+esac
 guest_user=${DISTILL_GUEST_SSH_USER:-distill}
 target=${DISTILL_GUEST_SSH_TARGET:-$guest_user@127.0.0.1}
 port=${DISTILL_GUEST_SSH_PORT:-2222}
 guest_ssh_cmd="$repo_dir/scripts/hvf/guest-ssh"
 unattended="$repo_dir/scripts/hvf/unattended-install"
+fetch_recovery="$repo_dir/scripts/hvf/fetch-recovery"
 public_key=${DISTILL_GUEST_SSH_PUBLIC_KEY_FILE:-}
 qemu_args=${DISTILL_QEMU_ARGS_JSON:-}
 qemu_code_url=${DISTILL_QEMU_CODE_URL:-}
@@ -48,14 +57,17 @@ cleanup() {
   fi
   if [ -n "$install_media" ] && [ -f "$install_media" ]; then
     media_mount="$work_dir/install-media-diagnostics"
+    attach_log="$output_dir/install-media-attach.log"
     mkdir -p "$media_mount"
-    if hdiutil attach -readonly -nobrowse -mountpoint "$media_mount" "$install_media" >/dev/null 2>&1; then
-      for media_file in diskutil-list.txt install-script.log install-script.status startosinstall.log; do
+    if hdiutil attach -readonly -nobrowse -mountpoint "$media_mount" "$install_media" >"$attach_log" 2>&1; then
+      for media_file in diskutil-list.txt target-disk-info.txt install-script.log install-script.status startosinstall.log; do
         if [ -f "$media_mount/$media_file" ]; then
           cp "$media_mount/$media_file" "$output_dir/$media_file"
         fi
       done
-      hdiutil detach "$media_mount" >/dev/null 2>&1 || true
+      hdiutil detach "$media_mount" >>"$attach_log" 2>&1 || true
+    else
+      printf '%s\n' "install media diagnostics attach failed" >>"$attach_log"
     fi
   fi
   rm -rf "$work_dir"
@@ -82,6 +94,10 @@ test -x "$unattended" || {
   printf '%s\n' "bootstrap-legacy: unattended installer is unavailable: $unattended" >&2
   exit 1
 }
+test -x "$fetch_recovery" || {
+  printf '%s\n' "bootstrap-legacy: recovery downloader is unavailable: $fetch_recovery" >&2
+  exit 1
+}
 test -n "$qemu_args" || {
   printf '%s\n' "bootstrap-legacy: DISTILL_QEMU_ARGS_JSON is required" >&2
   exit 1
@@ -90,7 +106,7 @@ command -v "$plutil_cmd" >/dev/null 2>&1 || {
   printf '%s\n' "bootstrap-legacy: plutil is required" >&2
   exit 1
 }
-for tool in "$qemu_bin" "$qemu_img" brew curl hdiutil jq openssl pkgbuild productbuild pkgutil shasum; do
+for tool in "$qemu_bin" "$qemu_img" brew curl hdiutil jq openssl pkgbuild productbuild pkgutil python3 shasum; do
   command -v "$tool" >/dev/null 2>&1 || {
     printf '%s\n' "bootstrap-legacy: required tool is unavailable: $tool" >&2
     exit 1
@@ -144,14 +160,6 @@ if capability rebootdelay; then
   rebootdelay_arg=' --rebootdelay 0'
 fi
 
-base_system="$installer/Contents/SharedSupport/BaseSystem.dmg"
-if [ ! -f "$base_system" ]; then
-  base_system="$installer/Contents/SharedSupport/SharedSupport.dmg"
-fi
-test -f "$base_system" || {
-  printf '%s\n' "bootstrap-legacy: installer has no boot image: $installer/Contents/SharedSupport/{BaseSystem.dmg,SharedSupport.dmg}" >&2
-  exit 1
-}
 test -f "$opencore_dir/EFI/BOOT/BOOTx64.efi" || {
   printf '%s\n' "bootstrap-legacy: OpenCore BOOTx64.efi is missing" >&2
   exit 1
@@ -283,7 +291,7 @@ exec >> "\$log" 2>&1
 
 diskutil list > /Volumes/InstallMedia/diskutil-list.txt 2>&1
 cat /Volumes/InstallMedia/diskutil-list.txt
-d=\$(diskutil list | awk '
+d=\$(awk '
 /GUID_partition_scheme/ {
   size=\$3
   sub(/^\\*/, "", size)
@@ -295,9 +303,11 @@ d=\$(diskutil list | awk '
 }
 END {
   if (disk != "") print disk
-')
+') < /Volumes/InstallMedia/diskutil-list.txt)
 printf 'TARGET_DISK=%s\\n' "\$d"
 test -n "\$d"
+diskutil info "\$d" > /Volumes/InstallMedia/target-disk-info.txt 2>&1
+cat /Volumes/InstallMedia/target-disk-info.txt
 diskutil eraseDisk APFS MACOS "\$d"
 printf '%s\\n' "STARTOSINSTALL_BEGIN \$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 set +e
@@ -315,17 +325,27 @@ chmod 755 "$install_script"
 command_file="$work_dir/install-command.txt"
 printf '%s\n' /Volumes/InstallMedia/brew-distill-install > "$command_file"
 command_diagnostic="$output_dir/startosinstall-command.txt"
-cp "$install_script" "$command_diagnostic"
-chmod 644 "$command_diagnostic"
+{
+  printf '%s\n' '# command typed by unattended driver'
+  printf '%s\n' /Volumes/InstallMedia/brew-distill-install
+  printf '%s\n' '# script copied to InstallMedia'
+  cat "$install_script"
+} > "$command_diagnostic"
 install_media="$work_dir/install-media.dmg"
 install_media_dmg_started=$(date +%s)
 hdiutil create -srcfolder "$media_root" -format UDRW -volname InstallMedia \
   -ov "$install_media" >/dev/null
 record_timing install_media_dmg_create "$install_media_dmg_started"
 
+recovery_source="$work_dir/BaseSystem.dmg"
+recovery_metadata="$output_dir/recovery-image.json"
+recovery_download_started=$(date +%s)
+"$fetch_recovery" "$major" "$recovery_source" "$recovery_metadata" \
+  > "$output_dir/recovery-download.log" 2>&1
+record_timing recovery_image_download "$recovery_download_started"
 recovery_output="$work_dir/recovery"
 recovery_dmg_started=$(date +%s)
-hdiutil convert "$base_system" -format UDRW -o "$recovery_output" >/dev/null
+hdiutil convert "$recovery_source" -format UDRW -o "$recovery_output" >/dev/null
 record_timing recovery_dmg_convert "$recovery_dmg_started"
 recovery="$recovery_output"
 if [ ! -f "$recovery" ] && [ -f "$recovery.dmg" ]; then
@@ -606,17 +626,17 @@ guest_ssh sudo -n rm -f \
   /private/etc/sudoers.d/brew-distill \
   /var/db/brew-distill-bootstrap.done
 
-installer_sha=$(shasum -a 256 "$base_system" | awk '{print $1}')
+recovery_sha=$(jq -r '.image_sha256 // empty' "$recovery_metadata")
 media_sha=$(shasum -a 256 "$install_media" | awk '{print $1}')
 homebrew_sha=$(shasum -a 256 "$homebrew_installer" | awk '{print $1}')
 jq -n \
   --arg installer "$installer" \
-  --arg installer_sha "$installer_sha" \
+  --arg recovery_sha "$recovery_sha" \
   --arg recovery "$recovery" \
   --arg media_sha "$media_sha" \
   --arg homebrew_sha "$homebrew_sha" \
   --arg target "$target" \
   --argjson disk_gib "$disk_gib" \
-  '{schema:1,installer:$installer,base_system_sha256:$installer_sha,recovery_image:$recovery,install_media_sha256:$media_sha,homebrew_installer_sha256:$homebrew_sha,target:$target,disk_gib:$disk_gib,qemu_runtime_config:".qemu-runtime.json",vm_image:false}' \
+  '{schema:1,installer:$installer,recovery_image:$recovery,recovery_image_sha256:$recovery_sha,install_media_sha256:$media_sha,homebrew_installer_sha256:$homebrew_sha,target:$target,disk_gib:$disk_gib,qemu_runtime_config:".qemu-runtime.json",vm_image:false}' \
   > "$output_dir/legacy-bootstrap.json"
 printf '%s\n' "Legacy guest bootstrap complete"

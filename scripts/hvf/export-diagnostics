@@ -25,8 +25,11 @@ find "$output_dir" -type f \( \
   -o -name 'guest-info.*' -o -name 'guest-*.json' -o -name '*.guest-*.json' \
   -o -name 'startosinstall-usage.txt' \
   -o -name 'startosinstall-command.txt' -o -name 'startosinstall-package-info.txt' \
-  -o -name 'diskutil-list.txt' -o -name 'install-script.log' \
+  -o -name 'diskutil-list.txt' -o -name 'target-disk-info.txt' \
+  -o -name 'install-script.log' \
   -o -name 'install-script.status' -o -name 'startosinstall.log' \
+  -o -name 'install-media-attach.log' -o -name 'recovery-image.json' \
+  -o -name 'recovery-download.log' \
   -o -name 'unattended-frames.jsonl' -o -name 'screen-*.ppm' \
   -o -name 'phase-timings.json' \
   -o -name 'full-installers.txt' \

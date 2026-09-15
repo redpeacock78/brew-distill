@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""Resolve and download an Apple Recovery BaseSystem image."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import secrets
+import struct
+import sys
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+from urllib.parse import urlsplit
+
+
+BOARD_IDS = {
+    "11": ("Mac-2BD1B31983FE1663", "default"),
+    "12": ("Mac-B809C3757DA9BB8D", "latest"),
+    "13": ("Mac-4B682C642B45593E", "latest"),
+    "14": ("Mac-827FAC58A8FDFA22", "default"),
+}
+API_URL = os.environ.get("DISTILL_RECOVERY_API_URL", "https://osrecovery.apple.com")
+MLB = os.environ.get("DISTILL_RECOVERY_MLB", "00000000000000000")
+USER_AGENT = "InternetRecovery/1.0"
+CHUNKLIST_HEADER = struct.Struct("<4sIBBBxQQQ")
+CHUNK = struct.Struct("<I32s")
+APPLE_EFI_ROM_PUBLIC_KEY = int(
+    "C3E748CAD9CD384329E10E25A91E43E1A762FF529ADE578C935BDDF9B13F2179D4855E6FC89E9E29CA12517D17DFA1EDCE0BEBF0EA7B461FFE61D94E2BDF72C196F89ACD3536B644064014DAE25A15DB6BB0852ECBD120916318D1CCDEA3C84C92ED743FC176D0BACA920D3FCF3158AFF731F88CE0623182A8ED67E650515F75745909F07D415F55FC15A35654D118C55A462D37A3ACDA08612F3F3F6571761EFCCBCC299AEE99B3A4FD6212CCFFF5EF37A2C334E871191F7E1C31960E010A54E86FA3F62E6D6905E1CD57732410A3EB0C6B4DEFDABE9F59BF1618758C751CD56CEF851D1C0EAA1C558E37AC108DA9089863D20E2E7E4BF475EC66FE6B3EFDCF",
+    16,
+)
+
+
+def request(url: str, *, headers: dict[str, str], data: Optional[bytes] = None):
+    req = urllib.request.Request(url, headers=headers, data=data)
+    with urllib.request.urlopen(req, timeout=60) as response:
+        return response.headers, response.read()
+
+
+def resolve(major: str) -> dict[str, str]:
+    board_id, os_type = BOARD_IDS[major]
+    session_headers, _ = request(
+        f"{API_URL.rstrip('/')}/",
+        headers={"User-Agent": USER_AGENT, "Connection": "close"},
+    )
+    set_cookie = session_headers.get("Set-Cookie", "")
+    session = set_cookie.split(";", 1)[0]
+    if not session.startswith("session="):
+        raise RuntimeError("Apple Recovery API did not return a session cookie")
+
+    values = {
+        "cid": secrets.token_hex(8).upper(),
+        "sn": MLB,
+        "bid": os.environ.get("DISTILL_RECOVERY_BOARD_ID", board_id),
+        "k": secrets.token_hex(32).upper(),
+        "fg": secrets.token_hex(32).upper(),
+        "os": os.environ.get("DISTILL_RECOVERY_OS_TYPE", os_type),
+    }
+    body = "\n".join(f"{key}={value}" for key, value in values.items()).encode()
+    response_headers, response_body = request(
+        f"{API_URL.rstrip('/')}/InstallationPayload/RecoveryImage",
+        headers={
+            "User-Agent": USER_AGENT,
+            "Connection": "close",
+            "Cookie": session,
+            "Content-Type": "text/plain",
+        },
+        data=body,
+    )
+    del response_headers
+    info: dict[str, str] = {}
+    for line in response_body.decode("utf-8", "replace").splitlines():
+        key, separator, value = line.partition(": ")
+        if separator:
+            info[key] = value
+    required = ("AP", "AU", "AH", "AT", "CU", "CH", "CT")
+    missing = [key for key in required if not info.get(key)]
+    if missing:
+        raise RuntimeError(f"Apple Recovery API response is missing: {', '.join(missing)}")
+    for key in ("AU", "CU"):
+        parsed = urlsplit(info[key])
+        if parsed.hostname != "oscdn.apple.com" or (
+            key == "AU" and not parsed.path.endswith(".dmg")
+        ):
+            raise RuntimeError(f"unexpected Apple Recovery URL in {key}")
+    if not urlsplit(info["CU"]).path.endswith(".chunklist"):
+        raise RuntimeError("unexpected Apple Recovery chunklist URL")
+    info["board_id"] = values["bid"]
+    info["os_type"] = values["os"]
+    return info
+
+
+def chunk_records(path: Path) -> tuple[list[tuple[int, bytes]], bool]:
+    data = path.read_bytes()
+    if len(data) < CHUNKLIST_HEADER.size:
+        raise RuntimeError("Apple Recovery chunklist is truncated")
+    header = data[: CHUNKLIST_HEADER.size]
+    magic, header_size, version, method, signature_method, count, offset, signature_offset = CHUNKLIST_HEADER.unpack(header)
+    if (magic, header_size, version, method, offset) != (b"CNKL", 0x24, 1, 1, 0x24):
+        raise RuntimeError("Apple Recovery chunklist header is invalid")
+    records_end = offset + CHUNK.size * count
+    if records_end != signature_offset or len(data) <= signature_offset:
+        raise RuntimeError("Apple Recovery chunklist layout is invalid")
+    records = [
+        CHUNK.unpack_from(data, offset + index * CHUNK.size)
+        for index in range(count)
+    ]
+    signed_digest = hashlib.sha256(data[:records_end]).digest()
+    if signature_method == 1:
+        signature = int.from_bytes(data[signature_offset : signature_offset + 256], "little")
+        plaintext = int(
+            f"0x1{'f' * 404}003031300d060960864801650304020105000420{'0' * 64}",
+            16,
+        ) | int.from_bytes(signed_digest, "big")
+        if pow(signature, 0x10001, APPLE_EFI_ROM_PUBLIC_KEY) != plaintext:
+            raise RuntimeError("Apple Recovery chunklist signature is invalid")
+        signature_verified = True
+    elif signature_method == 2:
+        if data[signature_offset : signature_offset + 32] != signed_digest:
+            raise RuntimeError("Apple Recovery chunklist digest is invalid")
+        signature_verified = False
+    else:
+        raise RuntimeError("Apple Recovery chunklist signature method is unsupported")
+    if len(data) != signature_offset + (256 if signature_method == 1 else 32):
+        raise RuntimeError("Apple Recovery chunklist has trailing data")
+    return records, signature_verified
+
+
+def download(url: str, token: str, output: Path, records: list[tuple[int, bytes]]) -> str:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    partial = output.with_name(f".{output.name}.part")
+    image_hash = hashlib.sha256()
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Connection": "close",
+                "Cookie": f"AssetToken={token}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=60) as response, partial.open("wb") as stream:
+            for index, (size, expected) in enumerate(records, 1):
+                remaining = size
+                chunk_hash = hashlib.sha256()
+                while remaining:
+                    block = response.read(min(1024 * 1024, remaining))
+                    if not block:
+                        raise RuntimeError(f"Apple Recovery image ended in chunk {index}")
+                    stream.write(block)
+                    image_hash.update(block)
+                    chunk_hash.update(block)
+                    remaining -= len(block)
+                if chunk_hash.digest() != expected:
+                    raise RuntimeError(f"Apple Recovery image hash mismatch in chunk {index}")
+            if response.read(1):
+                raise RuntimeError("Apple Recovery image has trailing data")
+        partial.replace(output)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+    return image_hash.hexdigest()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("major", choices=sorted(BOARD_IDS))
+    parser.add_argument("output", type=Path)
+    parser.add_argument("metadata", type=Path)
+    args = parser.parse_args()
+    try:
+        info = resolve(args.major)
+        chunklist = args.output.with_name(f".{args.output.name}.chunklist")
+        chunklist.parent.mkdir(parents=True, exist_ok=True)
+        chunklist.write_bytes(
+            request(
+                info["CU"],
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Connection": "close",
+                    "Cookie": f"AssetToken={info['CT']}",
+                },
+            )[1]
+        )
+        records, signature_verified = chunk_records(chunklist)
+        image_sha = download(info["AU"], info["AT"], args.output, records)
+        args.metadata.parent.mkdir(parents=True, exist_ok=True)
+        args.metadata.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "source": "apple-recovery",
+                    "version": args.major,
+                    "board_id": info["board_id"],
+                    "os_type": info["os_type"],
+                    "product_id": info["AP"],
+                    "asset_hash": info["AH"],
+                    "image_url": info["AU"],
+                    "chunklist_hash": info["CH"],
+                    "chunklist_url": info["CU"],
+                    "image_sha256": image_sha,
+                    "image_size_bytes": args.output.stat().st_size,
+                    "chunk_count": len(records),
+                    "chunklist_signature_verified": signature_verified,
+                    "resolved_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(f"recovery={args.output}")
+        print(f"product_id={info['AP']}")
+        print(f"image_sha256={image_sha}")
+        return 0
+    except Exception as error:
+        print(f"fetch-recovery: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

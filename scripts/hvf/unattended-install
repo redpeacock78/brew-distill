@@ -42,6 +42,17 @@ Frame = Struct.new(
     signature.each_index.sum { |index| (signature[index] - other.signature[index]).abs }
   end
 
+  def uefi_shell_like?
+    return false unless visible && signature.length >= 30
+
+    samples = signature.each_slice(3).to_a
+    nonblack = samples.count { |red, green, blue| red + green + blue > 24 }
+    bright = samples.count { |red, green, blue| red + green + blue > 300 }
+    bright_rows = samples.each_slice(32).count { |row| row.count { |red, green, blue| red + green + blue > 300 } >= 2 }
+    # ponytail: sampled framebuffer heuristic; OCR would add a runner dependency.
+    nonblack <= 12 && bright >= 4 && bright_rows >= 2
+  end
+
   def self.empty
     new(size: 0, digest: "", width: 0, height: 0, visible: false, signature: [])
   end
@@ -221,16 +232,28 @@ def run
       frame.visible ? frame : nil
     end
     @guest_boot_seconds = (monotonic - started).to_i
+    save_current_frame("screen-picker.ppm")
     sleep @picker_settle
     send_key "ret"
 
     event "waiting for macOS recovery"
+    uefi_shell_frames = 0
     @recovery_frame = wait_for(@recovery_timeout, "macOS recovery") do
       frame = capture_frame
+      if frame.uefi_shell_like?
+        uefi_shell_frames += 1
+        if uefi_shell_frames >= 2
+          save_current_frame("screen-recovery-timeout.ppm")
+          raise UnattendedError, "UEFI Shell reached instead of macOS Recovery; recovery boot image or OpenCore entry is invalid"
+        end
+        next nil
+      end
+      uefi_shell_frames = 0
       frame.visible && frame.digest != @picker_frame.digest ? frame : nil
     end
     event "recovery loaded; waiting for a stable screen"
     @recovery_frame = wait_until_still
+    save_current_frame("screen-recovery.ppm")
 
     event "opening the recovery Terminal"
     TERMINAL_NAV.each do |key|
@@ -247,10 +270,10 @@ def run
     @command_entered_at = monotonic
     event "startosinstall command submitted; waiting for first reboot"
     wait_for_first_reboot
-    event "first reboot reached; detaching the recovery disk"
+    event "first reboot reached; detaching the recovery image"
     @monitor.command "stop"
     wait_for(120, "QEMU to pause") { @monitor.command("info status").match?(/paused/i) }
-    response = @monitor.command "device_del InstallMediaDevice"
+    response = @monitor.command "device_del RecoveryDevice"
     raise UnattendedError, "cannot detach recovery media: #{response}" if response.match?(/error|not found/i)
     sleep 2
     @monitor.command "cont"
@@ -321,6 +344,7 @@ def run
 
     raise UnattendedError, "install did not finish within #{@total_budget.to_i}s"
   rescue UnattendedError => error
+    save_current_frame("screen-recovery-timeout.ppm") if @picker_frame && !@command_entered_at
     save_current_frame("screen-first-reboot-timeout.ppm") if @command_entered_at
     event "install failed: #{error.message}"
     elapsed = @started ? (monotonic - @started).to_i : 0
@@ -384,7 +408,8 @@ end
       visible: frame.visible,
       picker_distance: finite_metric(picker_distance),
       recovery_distance: finite_metric(recovery_distance),
-      picker_like: picker_like?(frame)
+      picker_like: picker_like?(frame),
+      uefi_shell_like: frame.uefi_shell_like?
     }
     File.open(@frame_log, "a") { |stream| stream.puts(JSON.generate(record)) }
   end
