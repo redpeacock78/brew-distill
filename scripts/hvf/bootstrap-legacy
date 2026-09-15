@@ -340,7 +340,7 @@ d=\$(awk '
 }
 END {
   if (disk != "") print disk
-') < /Volumes/InstallMedia/diskutil-list.txt)
+' < /Volumes/InstallMedia/diskutil-list.txt)
 printf 'TARGET_DISK=%s\\n' "\$d"
 test -n "\$d"
 diskutil info "\$d" > /Volumes/InstallMedia/target-disk-info.txt 2>&1

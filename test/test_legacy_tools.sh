@@ -57,6 +57,10 @@ assert calls == 2
 assert headers["Content-Type"] == "text/plain"
 assert body == b"ok"
 PY
+install_script="$test_dir/install-script.sh"
+awk 'BEGIN {emit=0} $0 == "cat > \"$install_script\" <<EOF" {emit=1; next} emit {if ($0 == "EOF") exit; print}' \
+  "$repo_dir/scripts/hvf/bootstrap-legacy" | sed 's/\\\$/\$/g' > "$install_script"
+sh -n "$install_script"
 DISTILL_DISK_CANDIDATES='' DISTILL_MIN_FREE_GIB=0 \
   "$repo_dir/scripts/hvf/reclaim-disk" "$test_dir/out" report >/dev/null
 jq -e '.mode == "report" and .paths == []' "$test_dir/out/reclaim.json" >/dev/null
