@@ -528,6 +528,7 @@ end
         elapsed_seconds: elapsed,
         guest_boot_seconds: guest_boot_seconds,
         guest_install_seconds: guest_install_seconds,
+        install_command_submitted: !@command_entered_at.nil?,
         picker_resolution: picker_resolution,
         recovery_resolution: recovery_resolution,
         events: @events

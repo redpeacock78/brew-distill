@@ -140,6 +140,13 @@ test -n "$expected_ssh_fingerprint" || {
   exit 2
 }
 mkdir -p "$output_dir"
+jq -n \
+  --arg user "$guest_user" \
+  --arg fingerprint "$expected_ssh_fingerprint" \
+  --argjson identity_configured "$([ -n "$ssh_identity" ] && printf 1 || printf 0)" \
+  --argjson identity_required "$require_ssh_identity" \
+  '{schema:1,user:$user,public_key_fingerprint:$fingerprint,identity_configured:($identity_configured == 1),identity_required:($identity_required == 1)}' \
+  > "$output_dir/ssh-client.json"
 timing_recorder="$repo_dir/scripts/hvf/record-timing"
 timing_file=${DISTILL_PHASE_TIMINGS:-$output_dir/phase-timings.json}
 record_timing() {
@@ -547,7 +554,6 @@ DISTILL_QEMU_ARGS_JSON="$args_json" \
   > "$output_dir/qemu.log" 2>&1 &
 qemu_pid=$!
 
-unattended_started=$(date +%s)
 set +e
 DISTILL_UNATTENDED_CAPTURE_DIR="$output_dir" \
 DISTILL_UNATTENDED_FRAME_LOG="$output_dir/unattended-frames.jsonl" \
@@ -559,18 +565,17 @@ unattended_status=$?
 set -e
 if [ -s "$output_dir/unattended-install.json" ]; then
   guest_boot_seconds=$(jq -r '.guest_boot_seconds // empty' "$output_dir/unattended-install.json" || true)
-  guest_install_seconds=$(jq -r '.guest_install_seconds // .elapsed_seconds // empty' "$output_dir/unattended-install.json" || true)
+  guest_install_seconds=$(jq -r '.guest_install_seconds // empty' "$output_dir/unattended-install.json" || true)
   case "$guest_boot_seconds" in
     ''|*[!0-9]*) guest_boot_seconds=$(( $(date +%s) - guest_boot_started )) ;;
   esac
-  case "$guest_install_seconds" in
-    ''|*[!0-9]*) guest_install_seconds=$(( $(date +%s) - unattended_started )) ;;
-  esac
   record_timing_seconds guest_boot "$guest_boot_seconds"
-  record_timing_seconds guest_install "$guest_install_seconds"
+  case "$guest_install_seconds" in
+    ''|*[!0-9]*) ;;
+    *) record_timing_seconds guest_install "$guest_install_seconds" ;;
+  esac
 else
   record_timing guest_boot "$guest_boot_started"
-  record_timing guest_install "$unattended_started"
 fi
 test "$unattended_status" -eq 0
 

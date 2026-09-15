@@ -132,7 +132,7 @@ if ! DISTILL_UNATTENDED_FRAME_WAIT=0 \
   exit 1
 fi
 
-jq -e '.schema == 1 and .status == "passed" and .guest_install_seconds >= 0 and .reboots == 1 and any(.events[]; contains("install finished"))' \
+jq -e '.schema == 1 and .status == "passed" and .guest_install_seconds >= 0 and .install_command_submitted == true and .reboots == 1 and any(.events[]; contains("install finished"))' \
   "$output" >/dev/null
 test -s "$test_dir/screen-before-command.ppm"
 test -s "$test_dir/screen-after-typing.ppm"
@@ -168,7 +168,7 @@ if DISTILL_UNATTENDED_FRAME_WAIT=0 \
   cat "$test_dir/shell-driver.log" >&2
   exit 1
 fi
-jq -e '.status == "failed" and (.error | contains("UEFI Shell")) and .guest_install_seconds == null' \
+jq -e '.status == "failed" and (.error | contains("UEFI Shell")) and .guest_install_seconds == null and .install_command_submitted == false' \
   "$shell_output" >/dev/null
 jq -s -e 'any(.[]; .uefi_shell_like == true)' \
   "$test_dir/unattended-frames.jsonl" >/dev/null
