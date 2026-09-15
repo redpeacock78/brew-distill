@@ -166,6 +166,7 @@ fi
 jq -e '.schema == 1 and .status == "passed" and .guest_install_seconds >= 0 and .install_command_submitted == true and .reboots == 1 and any(.events[]; contains("install finished"))' \
   "$output" >/dev/null
 test -s "$test_dir/screen-before-command.ppm"
+test -s "$test_dir/screen-terminal-navigation-1.ppm"
 test -s "$test_dir/screen-terminal-ready.ppm"
 test -s "$test_dir/screen-after-typing.ppm"
 test -s "$test_dir/screen-first-reboot.ppm"

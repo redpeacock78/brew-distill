@@ -10,6 +10,7 @@ require "time"
 require "tmpdir"
 
 TERMINAL_NAV = %w[ctrl-f2 right right right right down down down ret].freeze
+TERMINAL_NAV_ATTEMPTS = 2
 
 CHARMAP = {
   " " => "spc", "." => "dot", "/" => "slash", "-" => "minus", "_" => "shift-minus",
@@ -328,12 +329,25 @@ def run
     save_current_frame("screen-recovery.ppm")
     save_current_frame("screen-recovery-ready.ppm")
 
-    event "opening the recovery Terminal"
-    TERMINAL_NAV.each do |key|
-      send_key key
-      sleep @key_delay
+    terminal_frame = nil
+    TERMINAL_NAV_ATTEMPTS.times do |attempt|
+      send_key "esc" if attempt.positive?
+      event "opening the recovery Terminal (attempt #{attempt + 1})"
+      TERMINAL_NAV.each do |key|
+        send_key key
+        sleep @key_delay
+      end
+      save_current_frame("screen-terminal-navigation-#{attempt + 1}.ppm")
+      begin
+        terminal_frame = wait_for_terminal
+        break
+      rescue UnattendedError => error
+        raise if attempt + 1 == TERMINAL_NAV_ATTEMPTS
+
+        event "recovery Terminal not detected; retrying navigation (#{error.message})"
+      end
     end
-    wait_for_terminal
+    raise UnattendedError, "recovery Terminal navigation failed" unless terminal_frame
     sleep @terminal_settle if @terminal_settle.positive?
     send_key "spc"
     sleep @terminal_probe_delay
