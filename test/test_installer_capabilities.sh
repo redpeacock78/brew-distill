@@ -17,7 +17,7 @@ chmod 755 "$test_dir/Install macOS Test.app/Contents/Resources/startosinstall"
 
 "$repo_dir/scripts/hvf/installer-capabilities" \
   "$test_dir/Install macOS Test.app" "$test_dir/out" >/dev/null
-jq -e '.usage_status == 0 and .options.agreetolicense == true and .options.volume == true' \
+jq -e '.usage_status == 0 and .options.agreetolicense == true and .options.volume == false and .options.newvolumename == true' \
   "$test_dir/out/installer-capabilities.json" >/dev/null
 grep -Fq -- '--eraseinstall,' "$test_dir/out/startosinstall-usage.txt"
 

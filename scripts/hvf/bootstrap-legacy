@@ -95,12 +95,20 @@ test -f "$capabilities" || {
 capability() {
   [ "$($plutil_cmd -extract "options.$1" raw -o - "$capabilities" 2>/dev/null)" = "true" ]
 }
-for option in agreetolicense volume installpackage; do
+for option in agreetolicense installpackage; do
   capability "$option" || {
     printf '%s\n' "bootstrap-legacy: installer does not expose --$option" >&2
     exit 1
   }
 done
+if capability volume; then
+  install_target_args=' --volume /Volumes/MACOS'
+elif capability eraseinstall && capability newvolumename; then
+  install_target_args=' --eraseinstall --newvolumename MACOS'
+else
+  printf '%s\n' "bootstrap-legacy: installer exposes neither --volume nor --eraseinstall/--newvolumename" >&2
+  exit 1
+fi
 nointeraction_arg=
 if capability nointeraction; then
   nointeraction_arg=' --nointeraction'
@@ -226,7 +234,7 @@ disk_size=$(awk -v gib="$disk_gib" 'BEGIN { printf "%.1f", gib * 1.073741824 }')
 escaped_disk_size=$(printf '%s' "$disk_size" | sed 's/\\./\\\\./')
 command_file="$work_dir/install-command.txt"
 cat > "$command_file" <<EOF
-d=\$(diskutil list | awk '/\\*$escaped_disk_size GB/{print \$NF; exit}') && diskutil eraseDisk APFS MACOS \$d && /Volumes/InstallMedia/Contents/Resources/startosinstall --agreetolicense --volume /Volumes/MACOS$nointeraction_arg --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg
+d=\$(diskutil list | awk '/\\*$escaped_disk_size GB/{print \$NF; exit}') && diskutil eraseDisk APFS MACOS \$d && /Volumes/InstallMedia/Contents/Resources/startosinstall --agreetolicense$install_target_args$nointeraction_arg --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg
 EOF
 
 monitor="$work_dir/qemu-monitor.sock"
