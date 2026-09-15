@@ -23,6 +23,7 @@ jobs:
         run: |
           command -v jq
           command -v ruby
+          command -v python3
           command -v shasum
           if ! ruby -e 'require "webrick"' >/dev/null 2>&1; then
             gem install webrick --no-document
@@ -37,10 +38,11 @@ jobs:
           ruby -c cas-gateway
           ruby -c scripts/hvf/boot-guest
           ruby -c scripts/hvf/unattended-install
+          python3 -c 'import ast, pathlib; ast.parse(pathlib.Path("scripts/hvf/fetch-installer-catalog.py").read_text())'
           for file in brew-distill scripts/* scripts/hvf/* test/*.sh; do
             [ -f "$file" ] || continue
             case "$file" in
-              scripts/hvf/boot-guest|scripts/hvf/unattended-install) continue ;;
+              scripts/hvf/boot-guest|scripts/hvf/unattended-install|scripts/hvf/fetch-installer-catalog.py) continue ;;
             esac
             sh -n "$file"
             shellcheck "$file"

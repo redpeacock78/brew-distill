@@ -164,6 +164,47 @@ extract_cached_installer() {
   installer=$(find_installer || true)
   [ -n "$installer" ]
 }
+extract_catalog_installer() {
+  command -v python3 >/dev/null 2>&1 || {
+    printf '%s\n' "python3 is required for the Apple catalog fallback" >> "$installer_package_log"
+    return 1
+  }
+  command -v curl >/dev/null 2>&1 || {
+    printf '%s\n' "curl is required for the Apple catalog fallback" >> "$installer_package_log"
+    return 1
+  }
+  command -v shasum >/dev/null 2>&1 || {
+    printf '%s\n' "shasum is required for the Apple catalog fallback" >> "$installer_package_log"
+    return 1
+  }
+  catalog_helper=${DISTILL_INSTALLER_CATALOG_HELPER:-$(dirname -- "$0")/fetch-installer-catalog.py}
+  catalog_record=$(python3 "$catalog_helper" "$version" 2>> "$installer_package_log") || return 1
+  package_url=$(printf '%s' "$catalog_record" | jq -er \
+    '.package_url | select(startswith("https://"))') || return 1
+  package_path="$output_dir/InstallAssistant-$version.pkg"
+  {
+    printf '%s\n' "catalog=$catalog_record"
+    printf '%s\n' "downloading=$package_url"
+  } >> "$installer_package_log"
+  if ! curl --fail --location --retry 3 --retry-delay 2 --progress-bar \
+    "$package_url" -o "$package_path" >> "$installer_package_log" 2>&1; then
+    printf '%s\n' "catalog package download failed" >> "$installer_package_log"
+    return 1
+  fi
+  package_sha=$(shasum -a 256 "$package_path" | awk '{print $1}')
+  printf '%s\n' "package=$package_path" "package_sha256=$package_sha" >> "$installer_package_log"
+  if run_privileged env CM_BUILD=CM_BUILD "$installer_cmd" -pkg "$package_path" -target / \
+    >> "$installer_package_log" 2>&1; then
+    :
+  else
+    installer_status=$?
+    printf '%s\n' "installer exit status: $installer_status" >> "$installer_package_log"
+    return "$installer_status"
+  fi
+  printf '%s\n' "catalog package installed" >> "$installer_package_log"
+  installer=$(find_installer || true)
+  [ -n "$installer" ]
+}
 installer=
 discovery_timeout=${DISTILL_INSTALLER_DISCOVERY_TIMEOUT:-300}
 discovery_poll=${DISTILL_INSTALLER_DISCOVERY_POLL:-5}
@@ -194,8 +235,20 @@ while [ -z "$installer" ]; do
   [ "$elapsed" -ge "$discovery_timeout" ] && break
   sleep "$discovery_poll"
 done
+catalog_fallback=${DISTILL_INSTALLER_CATALOG_FALLBACK:-0}
+case "$catalog_fallback" in
+  0|1) ;;
+  *)
+    printf '%s\n' "fetch-installer: DISTILL_INSTALLER_CATALOG_FALLBACK must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
+if [ -z "$installer" ] && [ "$catalog_fallback" = "1" ]; then
+  printf '%s\n' "fetch-installer: resolving the exact installer package from Apple's catalog" >&2
+  extract_catalog_installer || true
+fi
 [ -n "$installer" ] || {
-  printf '%s\n' "fetch-installer: no Install macOS app with version $version found in $installer_location; see $available_file" >&2
+  printf '%s\n' "fetch-installer: no Install macOS app with version $version found in $installer_location or the configured package caches; see $available_file" >&2
   exit 1
 }
 run_privileged /bin/test -x "$installer/Contents/Resources/startosinstall" || {
