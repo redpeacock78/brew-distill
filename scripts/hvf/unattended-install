@@ -25,7 +25,7 @@ CHARMAP = {
 class UnattendedError < StandardError; end
 
 Frame = Struct.new(
-  :size, :digest, :width, :height, :visible, :signature,
+  :size, :digest, :width, :height, :visible, :signature, :panel_width, :terminal_like,
   keyword_init: true
 ) do
   def dimensions
@@ -61,8 +61,19 @@ Frame = Struct.new(
     nonblack > 12 && !uefi_shell_like?
   end
 
+  def recovery_ready_like?
+    return false unless recovery_ui_like? && panel_width.positive?
+
+    ratio = panel_width.to_f / width
+    ratio > 0.15 && ratio < 0.35
+  end
+
+  def terminal_like?
+    terminal_like
+  end
+
   def self.empty
-    new(size: 0, digest: "", width: 0, height: 0, visible: false, signature: [])
+    new(size: 0, digest: "", width: 0, height: 0, visible: false, signature: [], panel_width: 0, terminal_like: false)
   end
 
   def self.read(path)
@@ -87,7 +98,9 @@ Frame = Struct.new(
       width: width,
       height: height,
       visible: visible && payload_size.positive?,
-      signature: signature
+      signature: signature,
+      panel_width: detect_panel_width(data, payload_offset, width, height, max_value),
+      terminal_like: terminal_controls?(data, payload_offset, width, height, max_value)
     )
   rescue Errno::ENOENT
     empty
@@ -110,7 +123,50 @@ Frame = Struct.new(
     end
     values
   end
+
+  def self.detect_panel_width(data, payload_offset, width, height, max_value)
+    y = height / 5
+    largest = 0
+    current = 0
+    width.times do |x|
+      pixel = payload_offset + ((y * width) + x) * 3
+      red = ((data.getbyte(pixel) || 0) * 255) / max_value
+      green = ((data.getbyte(pixel + 1) || 0) * 255) / max_value
+      blue = ((data.getbyte(pixel + 2) || 0) * 255) / max_value
+      if red.between?(30, 80) && (red - green).abs < 4 && (green - blue).abs < 4
+        current += 1
+        largest = current if current > largest
+      else
+        current = 0
+      end
+    end
+    largest
+  end
+
+  def self.terminal_controls?(data, payload_offset, width, height, max_value)
+    red = []
+    green = []
+    y_limit = [height / 5, 180].min
+    x_limit = [width / 4, 480].min
+    (0...y_limit).step(2) do |y|
+      (0...x_limit).step(2) do |x|
+        pixel = payload_offset + ((y * width) + x) * 3
+        r = ((data.getbyte(pixel) || 0) * 255) / max_value
+        g = ((data.getbyte(pixel + 1) || 0) * 255) / max_value
+        b = ((data.getbyte(pixel + 2) || 0) * 255) / max_value
+        red << [x, y] if r > 150 && g < 120 && b < 120
+        green << [x, y] if g > 140 && r < 120 && b < 140
+      end
+    end
+    red.any? do |red_x, red_y|
+      green.any? do |green_x, green_y|
+        (green_x - red_x).abs <= width / 10 && (green_y - red_y).abs <= height / 20
+      end
+    end
+  end
   private_class_method :sample_signature
+  private_class_method :detect_panel_width
+  private_class_method :terminal_controls?
 end
 
 def monotonic
@@ -210,6 +266,7 @@ class Driver
     @recovery_still_max = env_number("DISTILL_UNATTENDED_RECOVERY_STILL_MAX", 240)
     @recovery_still_frames = Integer(env_number("DISTILL_UNATTENDED_RECOVERY_STILL_FRAMES", 3))
     @recovery_still_poll = env_number("DISTILL_UNATTENDED_RECOVERY_STILL_POLL", ENV.fetch("DISTILL_UNATTENDED_POLL", "6"))
+    @recovery_ready_timeout = env_number("DISTILL_UNATTENDED_RECOVERY_READY_TIMEOUT", 120)
     @picker_settle = env_number("DISTILL_UNATTENDED_PICKER_SETTLE", 2)
     @terminal_timeout = env_number("DISTILL_UNATTENDED_TERMINAL_TIMEOUT", 30)
     @terminal_settle = env_number(
@@ -265,9 +322,11 @@ def run
       uefi_shell_frames = 0
       frame.recovery_ui_like? && frame.digest != @picker_frame.digest ? frame : nil
     end
-    event "recovery loaded; waiting for a stable screen"
+    event "recovery loaded; waiting for the final Recovery menu"
     @recovery_frame = wait_until_still
+    @recovery_frame = wait_for_recovery_menu
     save_current_frame("screen-recovery.ppm")
+    save_current_frame("screen-recovery-ready.ppm")
 
     event "opening the recovery Terminal"
     TERMINAL_NAV.each do |key|
@@ -411,7 +470,14 @@ end
   def wait_for_terminal
     wait_for(@terminal_timeout, "the recovery Terminal") do
       frame = capture_frame
-      frame.visible && frame.digest != @recovery_frame.digest ? frame : nil
+      frame.terminal_like? ? frame : nil
+    end
+  end
+
+  def wait_for_recovery_menu
+    wait_for(@recovery_ready_timeout, "the final macOS Recovery menu") do
+      frame = capture_frame
+      frame.recovery_ready_like? ? frame : nil
     end
   end
 
@@ -438,6 +504,8 @@ end
       recovery_distance: finite_metric(recovery_distance),
       picker_like: picker_like?(frame),
       recovery_ui_like: frame.recovery_ui_like?,
+      recovery_ready_like: frame.recovery_ready_like?,
+      terminal_like: frame.terminal_like?,
       uefi_shell_like: frame.uefi_shell_like?
     }
     File.open(@frame_log, "a") { |stream| stream.puts(JSON.generate(record)) }

@@ -64,6 +64,32 @@ def write_uefi_shell_frame(path, width, height)
   File.binwrite(path, header + data)
 end
 
+def write_recovery_menu_frame(path, width, height)
+  header = "P6\n#{width} #{height}\n255\n"
+  data = ("\0" * (width * height * 3)).b
+  left = width / 2 - width / 8
+  right = width / 2 + width / 8
+  top = height / 5
+  bottom = height * 4 / 5
+  (top...bottom).each do |y|
+    (left...right).each do |x|
+      pixel = (y * width + x) * 3
+      3.times { |channel| data.setbyte(pixel + channel, 60) }
+    end
+  end
+  File.binwrite(path, header + data)
+end
+
+def write_terminal_frame(path, width, height)
+  header = "P6\n#{width} #{height}\n255\n"
+  data = ([30, 30, 30].pack("C3") * (width * height)).b
+  [[6, 4, 255, 95, 87], [10, 4, 40, 200, 64]].each do |x, y, red, green, blue|
+    pixel = (y * width + x) * 3
+    3.times { |channel| data.setbyte(pixel + channel, [red, green, blue][channel]) }
+  end
+  File.binwrite(path, header + data)
+end
+
 File.open(command_log, "w") do |log|
   uefi_shell = ENV["UEFI_SHELL"] == "1"
   loop do
@@ -79,12 +105,14 @@ File.open(command_log, "w") do |log|
                    write_uefi_shell_frame(Regexp.last_match(1), 64, 36)
                  else
                    case screendumps
-                   when 1, 8..100
+                   when 1, 13..100
                      write_frame(Regexp.last_match(1), 64, 36, 220, 220, 220)
                    when 2..4
                      write_boot_progress_frame(Regexp.last_match(1), 64, 36)
-                   when 5..7, 12..100
-                     write_frame(Regexp.last_match(1), 32, 18, 20, 20, 220)
+                   when 5..8
+                     write_recovery_menu_frame(Regexp.last_match(1), 32, 18)
+                   when 9..12
+                     write_terminal_frame(Regexp.last_match(1), 64, 36)
                    end
                  end
                  ""
@@ -142,9 +170,12 @@ test -s "$test_dir/screen-terminal-ready.ppm"
 test -s "$test_dir/screen-after-typing.ppm"
 test -s "$test_dir/screen-first-reboot.ppm"
 awk 'NR == 2 { print }' "$test_dir/screen-recovery.ppm" | grep -Fx '32 18'
+test -s "$test_dir/screen-recovery-ready.ppm"
 test -s "$test_dir/unattended-frames.jsonl"
 jq -s -e 'all(.[]; .uefi_shell_like == false)' "$test_dir/unattended-frames.jsonl" >/dev/null
 jq -s -e 'any(.[]; .recovery_ui_like == true)' "$test_dir/unattended-frames.jsonl" >/dev/null
+jq -s -e 'any(.[]; .recovery_ready_like == true)' "$test_dir/unattended-frames.jsonl" >/dev/null
+jq -s -e 'any(.[]; .terminal_like == true)' "$test_dir/unattended-frames.jsonl" >/dev/null
 grep -Fqx -- 'sendkey ctrl-f2' "$commands"
 grep -Fqx -- 'sendkey spc' "$commands"
 grep -Fqx -- 'sendkey backspace' "$commands"
