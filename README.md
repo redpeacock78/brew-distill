@@ -133,7 +133,7 @@ DISTILL_BASE_IMAGE=out/hvf/base.qcow2 \
 
 `prepare-opencore` accepts configuration files only and rejects VM images. `fetch-installer`, `bootstrap-guest`, and `bootstrap-homebrew` refuse to run outside macOS; `startosinstall` is never invoked from Linux. `boot-guest` requires macOS/HVF and accepts an optional JSON QEMU argument configuration.
 
-`fetch-installer` searches the standard system and user Applications directories, waits for the app to appear after `softwareupdate` reports completion, and records only an installer whose `CFBundleShortVersionString` exactly matches the requested version. `installer-capabilities` is run immediately afterward by `legacy-poc`, so `startosinstall --usage` and its detected options are available before the bootstrap hook starts.
+`fetch-installer` searches the standard system and user Applications directories, falls back to a full local search and cached `InstallAssistant` package extraction when needed, waits for the app to appear after `softwareupdate` reports completion, and records only an installer whose `CFBundleShortVersionString` exactly matches the requested version. `installer-capabilities` is run immediately afterward by `legacy-poc`, so `startosinstall --usage` and its detected options are available before the bootstrap hook starts.
 
 Set `DISTILL_OPENCORE_STRICT=1` for a real Legacy run. Strict preparation validates `config.plist`, `EFI/BOOT/BOOTx64.efi`, and `EFI/OC/OpenCore.efi` before creating the base image. The OpenCore directory is configuration and boot media input; VM images remain rejected.
 

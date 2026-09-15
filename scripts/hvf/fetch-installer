@@ -99,6 +99,11 @@ $HOME/Applications"
     installer_location="/Applications or $HOME/Applications"
   fi
 fi
+package_roots=/Library/Updates
+if [ -n "${HOME:-}" ] && [ "$HOME/Library/Updates" != "/Library/Updates" ]; then
+  package_roots="$package_roots
+$HOME/Library/Updates"
+fi
 find_installer() {
   while IFS= read -r search_root; do
     [ -d "$search_root" ] || continue
@@ -119,6 +124,35 @@ $installer_roots
 EOF
   return 1
 }
+find_installer_anywhere() {
+  while IFS= read -r candidate; do
+    candidate_version=$(
+      run_privileged "$plutil_cmd" -extract CFBundleShortVersionString raw -o - \
+        "$candidate/Contents/Info.plist" 2>/dev/null || true
+    )
+    if [ "$candidate_version" = "$version" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done <<EOF
+$(run_privileged find / -xdev \( -type d -o -type l \) -name 'Install macOS *.app' -print 2>/dev/null | sort)
+EOF
+  return 1
+}
+find_installer_package() {
+  while IFS= read -r search_root; do
+    [ -d "$search_root" ] || continue
+    while IFS= read -r package; do
+      printf '%s\n' "$package"
+      return 0
+    done <<EOF
+$(run_privileged find "$search_root" -type f -name 'InstallAssistant*.pkg' -print 2>/dev/null | sort)
+EOF
+  done <<EOF
+$package_roots
+EOF
+  return 1
+}
 installer=
 discovery_timeout=${DISTILL_INSTALLER_DISCOVERY_TIMEOUT:-300}
 discovery_poll=${DISTILL_INSTALLER_DISCOVERY_POLL:-5}
@@ -136,6 +170,19 @@ case "$discovery_poll" in
 esac
 discovery_started=$(date +%s)
 printf '%s\n' "fetch-installer: waiting up to ${discovery_timeout}s for the installer app" >&2
+installer=$(find_installer || true)
+if [ -z "$installer" ]; then
+  printf '%s\n' "fetch-installer: searching the full local filesystem for the installer app" >&2
+  installer=$(find_installer_anywhere || true)
+fi
+if [ -z "$installer" ]; then
+  installer_package=$(find_installer_package || true)
+  if [ -n "$installer_package" ]; then
+    printf '%s\n' "fetch-installer: extracting installer app from $installer_package" >&2
+    run_privileged /usr/sbin/installer -pkg "$installer_package" -target / >/dev/null
+    installer=$(find_installer || true)
+  fi
+fi
 while [ -z "$installer" ]; do
   installer=$(find_installer || true)
   [ -n "$installer" ] && break
