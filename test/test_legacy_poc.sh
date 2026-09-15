@@ -57,13 +57,14 @@ EOF
 cat > "$test_dir/bin/softwareupdate" <<'EOF'
 #!/bin/sh
 set -eu
-mkdir -p "$DISTILL_INSTALLER_ROOT/Install macOS Ventura.app/Contents/Resources"
-cat > "$DISTILL_INSTALLER_ROOT/Install macOS Ventura.app/Contents/Info.plist" <<'PLIST'
+installer_root=${DISTILL_INSTALLER_ROOT:-$HOME/Applications}
+mkdir -p "$installer_root/Install macOS Ventura.app/Contents/Resources"
+cat > "$installer_root/Install macOS Ventura.app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>13.6.1</string></dict></plist>
 PLIST
-cat > "$DISTILL_INSTALLER_ROOT/Install macOS Ventura.app/Contents/Resources/startosinstall" <<'INNER'
+cat > "$installer_root/Install macOS Ventura.app/Contents/Resources/startosinstall" <<'INNER'
 #!/bin/sh
 if [ "${1:-}" = "--usage" ]; then
   printf '%s\n' --agreetolicense --nointeraction --eraseinstall --volume
@@ -71,7 +72,7 @@ if [ "${1:-}" = "--usage" ]; then
 fi
 exit 0
 INNER
-chmod 755 "$DISTILL_INSTALLER_ROOT/Install macOS Ventura.app/Contents/Resources/startosinstall"
+chmod 755 "$installer_root/Install macOS Ventura.app/Contents/Resources/startosinstall"
 EOF
 cat > "$test_dir/bootstrap" <<'EOF'
 #!/bin/sh
@@ -101,10 +102,10 @@ chmod 755 "$test_dir/bin/sysctl"
 jq -n '{formulas:["csound"]}' > "$test_dir/batch.json"
 
 PATH="$test_dir/bin:$PATH" \
+HOME="$test_dir" \
 QEMU_SYSTEM_X86_64="$test_dir/bin/qemu-system-x86_64" \
 QEMU_IMG="$test_dir/bin/qemu-img" \
 DISTILL_SOFTWAREUPDATE="$test_dir/bin/softwareupdate" \
-DISTILL_INSTALLER_ROOT="$test_dir/Applications" \
 DISTILL_OPENCORE_DIR="$test_dir/opencore" \
 DISTILL_OPENCORE_STRICT=1 DISTILL_CREATE_OPENCORE_DISK=1 \
 DISTILL_INSTALLER_VERSION=13.6.1 \

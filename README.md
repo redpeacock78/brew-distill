@@ -124,7 +124,7 @@ The legacy preparation steps are deliberately input-driven:
 
 ```sh
 scripts/hvf/reclaim-disk out/hvf report
-scripts/hvf/fetch-installer 13.7.7 out/hvf
+scripts/hvf/fetch-installer 13.7.8 out/hvf
 DISTILL_OPENCORE_DIR=/path/to/oc-config \
   scripts/hvf/prepare-opencore 13 out/hvf/opencore
 DISTILL_BASE_IMAGE=out/hvf/base.qcow2 \

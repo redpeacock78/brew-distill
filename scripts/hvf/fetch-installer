@@ -46,21 +46,38 @@ mkdir -p "$output_dir"
 available_file="$output_dir/full-installers.txt"
 "$softwareupdate_cmd" --list-full-installers > "$available_file" 2>&1 || true
 "$softwareupdate_cmd" --fetch-full-installer --full-installer-version "$version"
-installer_root=${DISTILL_INSTALLER_ROOT:-/Applications}
-installer=
-while IFS= read -r candidate; do
-  candidate_version=$(
-    "$plutil_cmd" -extract CFBundleShortVersionString raw -o - \
-      "$candidate/Contents/Info.plist" 2>/dev/null || true
-  )
-  if [ "$candidate_version" = "$version" ]; then
-    installer=$candidate
+if [ -n "${DISTILL_INSTALLER_ROOT:-}" ]; then
+  installer_roots=$DISTILL_INSTALLER_ROOT
+  installer_location=$installer_roots
+else
+  installer_roots=/Applications
+  installer_location=/Applications
+  if [ -n "${HOME:-}" ] && [ "$HOME/Applications" != "/Applications" ]; then
+    installer_roots="$installer_roots
+$HOME/Applications"
+    installer_location="/Applications or $HOME/Applications"
   fi
-done <<EOF
+fi
+installer=
+while IFS= read -r installer_root; do
+  [ -d "$installer_root" ] || continue
+  while IFS= read -r candidate; do
+    candidate_version=$(
+      "$plutil_cmd" -extract CFBundleShortVersionString raw -o - \
+        "$candidate/Contents/Info.plist" 2>/dev/null || true
+    )
+    if [ "$candidate_version" = "$version" ]; then
+      installer=$candidate
+    fi
+  done <<EOF
 $(find "$installer_root" -maxdepth 1 -type d -name 'Install macOS *.app' -print | sort)
 EOF
+  [ -n "$installer" ] && break
+done <<EOF
+$installer_roots
+EOF
 [ -n "$installer" ] || {
-  printf '%s\n' "fetch-installer: no Install macOS app with version $version found in $installer_root; see $available_file" >&2
+  printf '%s\n' "fetch-installer: no Install macOS app with version $version found in $installer_location; see $available_file" >&2
   exit 1
 }
 test -x "$installer/Contents/Resources/startosinstall" || {
