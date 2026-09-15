@@ -74,6 +74,17 @@ exit 0
 INNER
 chmod 755 "$installer_root/Install macOS Ventura.app/Contents/Resources/startosinstall"
 EOF
+cat > "$test_dir/bin/sudo" <<'EOF'
+#!/bin/sh
+set -eu
+if [ "${1:-}" = -n ]; then
+  shift
+fi
+if [ "$#" -eq 1 ] && [ "$1" = true ]; then
+  exit 0
+fi
+exec "$@"
+EOF
 cat > "$test_dir/bootstrap" <<'EOF'
 #!/bin/sh
 set -eu
@@ -89,7 +100,7 @@ printf '%s\n' bottle > "$3/$1--1.0.ventura.bottle.tar.gz"
 test "${DISTILL_QEMU_CONFIG:-}" = "$DISTILL_LEGACY_OUTPUT_DIR/hvf/.qemu-runtime.json"
 EOF
 chmod 755 "$test_dir/bin/qemu-system-x86_64" "$test_dir/bin/qemu-img" \
-  "$test_dir/bin/softwareupdate" "$test_dir/bootstrap" "$test_dir/builder"
+  "$test_dir/bin/softwareupdate" "$test_dir/bin/sudo" "$test_dir/bootstrap" "$test_dir/builder"
 cat > "$test_dir/bin/sysctl" <<'EOF'
 #!/bin/sh
 case "${2:-}" in
@@ -106,7 +117,7 @@ HOME="$test_dir" \
 QEMU_SYSTEM_X86_64="$test_dir/bin/qemu-system-x86_64" \
 QEMU_IMG="$test_dir/bin/qemu-img" \
 DISTILL_SOFTWAREUPDATE="$test_dir/bin/softwareupdate" \
-DISTILL_SOFTWAREUPDATE_SUDO=0 \
+DISTILL_SOFTWAREUPDATE_SUDO=1 DISTILL_SOFTWAREUPDATE_ATTEMPTS=1 \
 DISTILL_OPENCORE_DIR="$test_dir/opencore" \
 DISTILL_OPENCORE_STRICT=1 DISTILL_CREATE_OPENCORE_DISK=1 \
 DISTILL_INSTALLER_VERSION=13.6.1 \
