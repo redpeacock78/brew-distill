@@ -115,8 +115,11 @@ if capability nointeraction; then
 fi
 
 base_system="$installer/Contents/SharedSupport/BaseSystem.dmg"
+if [ ! -f "$base_system" ]; then
+  base_system="$installer/Contents/SharedSupport/SharedSupport.dmg"
+fi
 test -f "$base_system" || {
-  printf '%s\n' "bootstrap-legacy: installer has no BaseSystem.dmg: $base_system" >&2
+  printf '%s\n' "bootstrap-legacy: installer has no boot image: $installer/Contents/SharedSupport/{BaseSystem.dmg,SharedSupport.dmg}" >&2
   exit 1
 }
 test -f "$opencore_dir/EFI/BOOT/BOOTx64.efi" || {

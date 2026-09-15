@@ -25,7 +25,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
   actions: write
 
 jobs:
@@ -49,13 +49,14 @@ jobs:
       DISTILL_QEMU_VARS_URL: ${{ vars.DISTILL_QEMU_VARS_URL }}
       DISTILL_QEMU_VARS_SHA256: ${{ vars.DISTILL_QEMU_VARS_SHA256 }}
       DISTILL_RELEASE_BUILD: "1"
-      DISTILL_VERIFY_AFTER_BUILD: "1"
+      DISTILL_VERIFY_AFTER_BUILD: "0"
       DISTILL_OPENCORE_STRICT: "1"
       DISTILL_CREATE_OPENCORE_DISK: "1"
       DISTILL_REQUIRE_GUEST_SSH_IDENTITY: "1"
       DISTILL_GUEST_SSH_TARGET: distill@127.0.0.1
       DISTILL_GUEST_SSH_PORT: "2222"
       DISTILL_QEMU_ARGS_JSON: ${{ secrets.DISTILL_QEMU_ARGS_JSON }}
+      GH_TOKEN: ${{ github.token }}
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_ARTIFACT_DOMAIN: ${{ vars.DISTILL_ARTIFACT_DOMAIN }}
       HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK: "1"
@@ -208,26 +209,104 @@ jobs:
 
       - name: Authorize Homebrew bottle downloads
         run: |
-          token=$(./scripts/homebrew-ghcr-token qemu $(printf '%s' "$DISTILL_BATCH_JSON" | jq -r '.formulas[]'))
+          token=$(./scripts/homebrew-ghcr-token qemu aria2 $(printf '%s' "$DISTILL_BATCH_JSON" | jq -r '.formulas[]'))
           echo "::add-mask::$token"
           printf '%s\n' "HOMEBREW_DOCKER_REGISTRY_TOKEN=$token" >> "$GITHUB_ENV"
 
+      - name: Prepare Draft Release
+        run: |
+          set -eu
+          tag="distill-legacy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --draft \
+            --title "$tag" \
+            --notes "Legacy Bottle build in progress for $GITHUB_REPOSITORY@$GITHUB_SHA"
+          printf '%s\n' "DISTILL_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+
       - name: Install QEMU
-        run: brew install qemu
+        run: brew install qemu aria2
 
       - name: Run Legacy PoC
         run: |
           printf '%s\n' "$DISTILL_BATCH_JSON" > legacy-batch.json
+          DISTILL_VERIFY_AFTER_BUILD=0 \
           DISTILL_LEGACY_OUTPUT_DIR=out \
             ./scripts/hvf/legacy-poc "$DISTILL_MACOS" legacy-batch.json
 
-      - name: Upload diagnostics and artifacts
+      - name: Upload Bottle and verification metadata to Draft Release
+        if: success()
+        run: |
+          set -eu
+          assets=()
+          while IFS= read -r asset; do
+            [ -f "$asset" ] || continue
+            assets+=("$asset")
+          done < <(find out/artifacts -maxdepth 1 -type f \( \
+            -name '*.bottle*.tar.gz' -o \
+            -name '*.bottle.json' -o \
+            -name '*.manifest.json' \
+          \) -print | sort)
+          [ "${#assets[@]}" -gt 0 ]
+          gh release upload "$DISTILL_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            "${assets[@]}"
+
+      - name: Verify Bottles from Draft Release
+        run: |
+          set -eu
+          mkdir -p draft-release verification
+          gh release download "$DISTILL_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.manifest.json' \
+            --pattern '*.bottle*.tar.gz' \
+            --dir draft-release
+          records='[]'
+          for manifest in draft-release/*.manifest.json; do
+            [ -f "$manifest" ] || continue
+            formula=$(jq -er '.formula.name' "$manifest")
+            bottle_name=$(jq -er '.artifact.path' "$manifest")
+            expected=$(jq -er '.artifact.sha256' "$manifest")
+            case "$bottle_name" in
+              /*|*/*|..*)
+                echo "manifest contains an unsafe Bottle path: $bottle_name" >&2
+                exit 1
+                ;;
+            esac
+            bottle="draft-release/$bottle_name"
+            test -f "$bottle"
+            DISTILL_BOTTLE_SHA256="$expected" \
+            DISTILL_QEMU_CONFIG=out/hvf/.qemu-runtime.json \
+            DISTILL_OPENCORE_DISK=out/hvf/opencore.img \
+              ./scripts/hvf/verify-bottle "$formula" "$bottle" \
+                out/hvf/base.qcow2 "verification/$formula"
+            records=$(printf '%s\n' "$records" | jq -c \
+              --arg formula "$formula" --arg sha256 "$expected" \
+              '. + [{formula:$formula,sha256:$sha256,status:"passed",fresh_overlay:true}]')
+          done
+          test "$records" != '[]'
+          jq -n \
+            --arg run "$GITHUB_RUN_ID" \
+            --arg sha "$GITHUB_SHA" \
+            --arg macos "$DISTILL_MACOS" \
+            --argjson records "$records" \
+            --slurpfile batch out/artifacts/batch-results.json \
+            --slurpfile timings out/artifacts/timings.json \
+            '{schema:1,run:$run,commit:$sha,platform:{macos:$macos,arch:"x86_64"},verification:{fresh_overlay:true,status:"passed",records:$records},batch:$batch[0],timings:$timings[0]}' \
+            > legacy-verification.json
+          gh release upload "$DISTILL_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            legacy-verification.json
+
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: legacy-${{ inputs.macos }}-${{ github.run_id }}
           path: |
-            out/artifacts/
             out/diagnostics.json
             out/hvf/host-info.json
             out/hvf/disk-*.txt

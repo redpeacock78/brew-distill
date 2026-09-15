@@ -36,6 +36,21 @@ done
 test -n "$output"
 printf '%s\n' package > "$output"
 EOF
+cat > "$test_dir/bin/aria2c" <<'EOF'
+#!/bin/sh
+set -eu
+directory=.
+output=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dir) directory=$2; shift 2 ;;
+    --out) output=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+test -n "$output"
+printf '%s\n' package > "$directory/$output"
+EOF
 cat > "$test_dir/catalog-helper.py" <<'EOF'
 import json
 
@@ -61,7 +76,7 @@ PLIST
 printf '%s\n' startosinstall > "$root/Install macOS Ventura.app/Contents/Resources/startosinstall"
 chmod 755 "$root/Install macOS Ventura.app/Contents/Resources/startosinstall"
 EOF
-chmod 755 "$test_dir/bin/uname" "$test_dir/bin/softwareupdate" "$test_dir/bin/curl" "$test_dir/installer"
+chmod 755 "$test_dir/bin/uname" "$test_dir/bin/softwareupdate" "$test_dir/bin/curl" "$test_dir/bin/aria2c" "$test_dir/installer"
 
 PATH="$test_dir/bin:$PATH" \
   DISTILL_SOFTWAREUPDATE="$test_dir/bin/softwareupdate" \
@@ -79,5 +94,6 @@ PATH="$test_dir/bin:$PATH" \
 jq -e '.version == "13.7.8" and .bundle_version == "18.7.62" and (.installer | endswith("Install macOS Ventura.app"))' \
   "$test_dir/out/installer.json" >/dev/null
 grep -Fqx -- 'catalog package installed' "$test_dir/out/installer-package.log"
+grep -Fqx -- 'downloader=aria2c' "$test_dir/out/installer-package.log"
 
 printf '%s\n' ok

@@ -175,10 +175,6 @@ extract_catalog_installer() {
     printf '%s\n' "python3 is required for the Apple catalog fallback" >> "$installer_package_log"
     return 1
   }
-  command -v curl >/dev/null 2>&1 || {
-    printf '%s\n' "curl is required for the Apple catalog fallback" >> "$installer_package_log"
-    return 1
-  }
   command -v shasum >/dev/null 2>&1 || {
     printf '%s\n' "shasum is required for the Apple catalog fallback" >> "$installer_package_log"
     return 1
@@ -197,9 +193,27 @@ extract_catalog_installer() {
     printf '%s\n' "catalog=$catalog_record"
     printf '%s\n' "downloading=$package_url"
   } >> "$installer_package_log"
-  if ! curl --fail --location --retry 3 --retry-delay 2 --progress-bar \
-    "$package_url" -o "$package_path" >> "$installer_package_log" 2>&1; then
-    printf '%s\n' "catalog package download failed" >> "$installer_package_log"
+  if command -v aria2c >/dev/null 2>&1; then
+    printf '%s\n' 'downloader=aria2c' >> "$installer_package_log"
+    if ! aria2c \
+      --allow-overwrite=true --auto-file-renaming=false --file-allocation=none \
+      --max-connection-per-server=8 --split=8 --min-split-size=10M \
+      --connect-timeout=15 --timeout="${DISTILL_DOWNLOAD_TIMEOUT:-600}" \
+      --max-tries=3 --retry-wait=2 \
+      --dir "$output_dir" --out "$(basename -- "$package_path")" "$package_url" \
+      >> "$installer_package_log" 2>&1; then
+      printf '%s\n' "catalog package download failed" >> "$installer_package_log"
+      return 1
+    fi
+  elif command -v curl >/dev/null 2>&1; then
+    printf '%s\n' 'downloader=curl' >> "$installer_package_log"
+    if ! curl --fail --location --retry 3 --retry-delay 2 --progress-bar \
+      "$package_url" -o "$package_path" >> "$installer_package_log" 2>&1; then
+      printf '%s\n' "catalog package download failed" >> "$installer_package_log"
+      return 1
+    fi
+  else
+    printf '%s\n' "aria2c or curl is required for the Apple catalog fallback" >> "$installer_package_log"
     return 1
   fi
   package_sha=$(shasum -a 256 "$package_path" | awk '{print $1}')
