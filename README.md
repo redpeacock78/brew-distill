@@ -87,7 +87,7 @@ DISTILL_PUBLISH=1 scripts/publish-release release/distill-build-123-1 \
 
 The publisher rechecks `checksums.txt`, refuses an existing tag, and uploads the Bottle and metadata assets through `gh`.
 
-The `Publish Community Bottles` workflow is the CI/CD path for this bundle. It builds the four native runner/architecture combinations, verifies each candidate on a fresh runner, assembles one multi-platform bundle, and uploads it as a workflow artifact. Set `publish` to `true` and provide a new release tag to let the final job call `publish-release`; the default keeps the run at the reviewable artifact stage.
+The `Publish Community Bottles` workflow is the CI/CD path for native publication. It first creates a Draft Release, then each build runner uploads its Bottle, Bottle JSON, and manifest directly to that release. Fresh verification runners read the matching manifest and Bottle from the Draft Release and add only a compact verification record. After all four platforms pass, the final job downloads control-plane JSON only, creates the aggregate manifest and checksums from GitHub's asset digests, uploads the metadata, and changes the Draft Release to a formal Release. Installer files, qcow2 images, and COW overlays never enter the Release or an Actions Artifact; a failed run leaves its draft for inspection.
 
 Source artifacts can be prefetched into the content-addressed layout with trusted metadata:
 

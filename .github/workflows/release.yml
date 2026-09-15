@@ -8,170 +8,277 @@ on:
         required: true
         default: csound
         type: string
-      publish:
-        description: Publish the verified bundle as a GitHub Release
-        required: true
-        default: false
-        type: boolean
       tag:
-        description: GitHub Release tag used when publish is enabled
-        required: true
-        default: v0.1.0
+        description: Optional release tag; defaults to a unique run tag
+        required: false
+        default: ""
         type: string
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   group: community-bottles-${{ inputs.formula }}
   cancel-in-progress: false
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            arch: arm64
-          - runner: macos-15-intel
-            arch: x86_64
-          - runner: macos-26
-            arch: arm64
-          - runner: macos-26-intel
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
-    env:
-      DISTILL_FORMULA: ${{ inputs.formula }}
-      DISTILL_RELEASE_BUILD: "1"
-      HOMEBREW_NO_AUTO_UPDATE: "1"
-      HOMEBREW_ARTIFACT_DOMAIN: ${{ vars.DISTILL_ARTIFACT_DOMAIN }}
-      HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK: "1"
-    steps:
-      - name: Checkout
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-
-      - name: Authorize Homebrew bottle downloads
-        run: |
-          token=$(./scripts/homebrew-ghcr-token "$DISTILL_FORMULA")
-          echo "::add-mask::$token"
-          printf '%s\n' "HOMEBREW_DOCKER_REGISTRY_TOKEN=$token" >> "$GITHUB_ENV"
-
-      - name: Build and package
-        run: |
-          test -n "$HOMEBREW_ARTIFACT_DOMAIN"
-          ./scripts/native-build "$DISTILL_FORMULA" out
-          ./scripts/package-release out release "$GITHUB_RUN_ID-$RUNNER_OS-${{ matrix.arch }}" "$GITHUB_RUN_ATTEMPT"
-
-      - name: Upload release candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-${{ matrix.runner }}-${{ matrix.arch }}
-          path: release/
-          if-no-files-found: error
-
-  verify:
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            arch: arm64
-          - runner: macos-15-intel
-            arch: x86_64
-          - runner: macos-26
-            arch: arm64
-          - runner: macos-26-intel
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
-    env:
-      DISTILL_FORMULA: ${{ inputs.formula }}
-      DISTILL_RELEASE_BUILD: "1"
-      HOMEBREW_NO_AUTO_UPDATE: "1"
-      HOMEBREW_ARTIFACT_DOMAIN: ${{ vars.DISTILL_ARTIFACT_DOMAIN }}
-      HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK: "1"
-    steps:
-      - name: Checkout
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-
-      - name: Authorize Homebrew bottle downloads
-        run: |
-          token=$(./scripts/homebrew-ghcr-token "$DISTILL_FORMULA")
-          echo "::add-mask::$token"
-          printf '%s\n' "HOMEBREW_DOCKER_REGISTRY_TOKEN=$token" >> "$GITHUB_ENV"
-
-      - name: Download release candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-${{ matrix.runner }}-${{ matrix.arch }}
-          path: release/
-
-      - name: Verify on fresh runner
-        run: |
-          test -n "$HOMEBREW_ARTIFACT_DOMAIN"
-          bottle=$(find release -type f -name '*.bottle*.tar.gz' -print | sed -n '1p')
-          checksums=$(find release -type f -name checksums.txt -print | sed -n '1p')
-          test -n "$bottle"
-          test -n "$checksums"
-          expected=$(awk -v file="$(basename "$bottle")" '$2 == file { print $1; exit }' "$checksums")
-          test -n "$expected"
-          ./scripts/native-verify "$DISTILL_FORMULA" "$bottle" "$expected" out/native-verify
-
-  package:
-    needs: verify
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-
-      - name: Download all verified candidates
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: release-*
-          path: candidates/
-
-      - name: Assemble release bundle
-        run: |
-          ./scripts/package-release candidates release "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
-          release_dir=$(find release -mindepth 1 -maxdepth 1 -type d -name 'distill-build-*' -print | sed -n '1p')
-          test -n "$release_dir"
-          if find "$release_dir" -type f \( -name '*.qcow2' -o -name '*.img' -o -name '*.raw' \) -print | grep -q .; then
-            echo "release bundle contains a VM image" >&2
-            exit 1
-          fi
-
-      - name: Upload assembled release candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-bundle-${{ github.run_id }}
-          path: release/
-          if-no-files-found: error
-
-  publish:
-    if: ${{ inputs.publish == true }}
-    needs: package
+  prepare:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
     env:
-      DISTILL_RELEASE_TAG: ${{ inputs.tag }}
-      DISTILL_PUBLISH: "1"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Create draft release
+        id: release
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          tag=${INPUT_TAG:-distill-build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT}
+          case "$tag" in
+            ""|-*|*[!A-Za-z0-9._/-]*)
+              echo "invalid release tag: $tag" >&2
+              exit 2
+              ;;
+          esac
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release already exists: $tag; choose a new tag" >&2
+            exit 1
+          fi
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --draft \
+            --title "$tag" \
+            --notes "Build in progress for $GITHUB_REPOSITORY@$GITHUB_SHA"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            bottle_tag: sequoia
+          - runner: macos-15-intel
+            arch: x86_64
+            bottle_tag: sequoia
+          - runner: macos-26
+            arch: arm64
+            bottle_tag: tahoe
+          - runner: macos-26-intel
+            arch: x86_64
+            bottle_tag: tahoe
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    env:
+      DISTILL_FORMULA: ${{ inputs.formula }}
+      DISTILL_RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      DISTILL_RELEASE_BUILD: "1"
+      GH_TOKEN: ${{ github.token }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_ARTIFACT_DOMAIN: ${{ vars.DISTILL_ARTIFACT_DOMAIN }}
+      HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Authorize Homebrew bottle downloads
+        run: |
+          token=$(./scripts/homebrew-ghcr-token "$DISTILL_FORMULA")
+          echo "::add-mask::$token"
+          printf '%s\n' "HOMEBREW_DOCKER_REGISTRY_TOKEN=$token" >> "$GITHUB_ENV"
+
+      - name: Build and upload Bottle
+        run: |
+          set -eu
+          test -n "$HOMEBREW_ARTIFACT_DOMAIN"
+          ./scripts/native-build "$DISTILL_FORMULA" out
+          bottle=$(find out -maxdepth 1 -type f -name '*.bottle*.tar.gz' -print | sed -n '1p')
+          bottle_json=$(find out -maxdepth 1 -type f -name '*.bottle.json' -print | sed -n '1p')
+          manifest=$(find out -maxdepth 1 -type f -name '*.manifest.json' -print | sed -n '1p')
+          test -n "$bottle"
+          test -n "$bottle_json"
+          test -n "$manifest"
+          ./homebrew-distill verify "$manifest"
+          gh release upload "$DISTILL_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            "$bottle" "$bottle_json" "$manifest"
+
+  verify:
+    needs: [prepare, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            bottle_tag: sequoia
+          - runner: macos-15-intel
+            arch: x86_64
+            bottle_tag: sequoia
+          - runner: macos-26
+            arch: arm64
+            bottle_tag: tahoe
+          - runner: macos-26-intel
+            arch: x86_64
+            bottle_tag: tahoe
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    env:
+      DISTILL_FORMULA: ${{ inputs.formula }}
+      DISTILL_RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      DISTILL_RELEASE_BUILD: "1"
+      DISTILL_RUNNER: ${{ matrix.runner }}
+      DISTILL_ARCH: ${{ matrix.arch }}
+      DISTILL_BOTTLE_TAG: ${{ matrix.bottle_tag }}
+      GH_TOKEN: ${{ github.token }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_ARTIFACT_DOMAIN: ${{ vars.DISTILL_ARTIFACT_DOMAIN }}
+      HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Authorize Homebrew bottle downloads
+        run: |
+          token=$(./scripts/homebrew-ghcr-token "$DISTILL_FORMULA")
+          echo "::add-mask::$token"
+          printf '%s\n' "HOMEBREW_DOCKER_REGISTRY_TOKEN=$token" >> "$GITHUB_ENV"
+
+      - name: Read candidate metadata from Draft Release
+        run: |
+          set -eu
+          mkdir -p release
+          gh release download "$DISTILL_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.manifest.json' \
+            --dir release
+          manifest=
+          for candidate in release/*.manifest.json; do
+            [ -f "$candidate" ] || continue
+            if jq -e \
+              --arg formula "$DISTILL_FORMULA" \
+              --arg arch "$DISTILL_ARCH" \
+              --arg tag "$DISTILL_BOTTLE_TAG" \
+              '(.formula.name == $formula) and (.platform.arch == $arch) and (.platform.bottle_tag == $tag)' \
+              "$candidate" >/dev/null; then
+              test -z "$manifest" || {
+                echo "multiple candidate manifests matched $DISTILL_ARCH/$DISTILL_BOTTLE_TAG" >&2
+                exit 1
+              }
+              manifest=$candidate
+            fi
+          done
+          test -n "$manifest"
+          bottle_name=$(jq -er '.artifact.path | select(type == "string" and length > 0)' "$manifest")
+          case "$bottle_name" in
+            /*|*/*|..*)
+              echo "manifest contains an unsafe Bottle path: $bottle_name" >&2
+              exit 1
+              ;;
+          esac
+          expected=$(jq -er '.artifact.sha256 | select(type == "string" and length == 64)' "$manifest")
+          gh release download "$DISTILL_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$bottle_name" \
+            --dir release
+          bottle="release/$bottle_name"
+          test -f "$bottle"
+          ./scripts/native-verify "$DISTILL_FORMULA" "$bottle" "$expected" out/native-verify
+          actual=$(awk -F= '$1 == "sha256" { print $2; exit }' out/native-verify/native-verification.txt)
+          test "$actual" = "$expected"
+          checks='["brew install","brew test","brew linkage --test"]'
+          if [ "$DISTILL_FORMULA" = "csound" ]; then
+            checks='["brew install","brew test","brew linkage --test","csound smoke"]'
+          fi
+          verification="verification-$DISTILL_RUNNER-$DISTILL_ARCH.json"
+          jq -n \
+            --arg formula "$DISTILL_FORMULA" \
+            --arg runner "$DISTILL_RUNNER" \
+            --arg arch "$DISTILL_ARCH" \
+            --arg tag "$DISTILL_BOTTLE_TAG" \
+            --arg bottle "$bottle_name" \
+            --arg sha256 "$actual" \
+            --argjson checks "$checks" \
+            '{schema:1,formula:$formula,platform:{runner:$runner,arch:$arch,bottle_tag:$tag},artifact:{name:$bottle,sha256:$sha256},verification:{fresh_runner:true,status:"passed",checks:$checks}}' \
+            > "$verification"
+          gh release upload "$DISTILL_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            "$verification"
+
+  finalize:
+    needs: [prepare, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      DISTILL_RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-      - name: Download assembled release candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-bundle-${{ github.run_id }}
-          path: release/
-
-      - name: Publish GitHub Release
+      - name: Add verification metadata and publish Release
         run: |
-          release_dir=$(find release -mindepth 1 -maxdepth 1 -type d -name 'distill-build-*' -print | sed -n '1p')
-          test -n "$release_dir"
-          ./scripts/publish-release "$release_dir" "$DISTILL_RELEASE_TAG" "$GITHUB_REPOSITORY"
+          set -eu
+          mkdir -p metadata
+          gh release download "$DISTILL_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.manifest.json' \
+            --pattern '*.bottle.json' \
+            --pattern 'verification-*.json' \
+            --dir metadata
+          manifest_count=$(find metadata -maxdepth 1 -type f -name '*.manifest.json' -print | wc -l | tr -d ' ')
+          verification_count=$(find metadata -maxdepth 1 -type f -name 'verification-*.json' -print | wc -l | tr -d ' ')
+          test "$manifest_count" -eq 4
+          test "$verification_count" -eq 4
+          jq -s --arg release "$DISTILL_RELEASE_TAG" \
+            '{schema:4,release:$release,bottles:map({formula,platform,builder,dependencies,toolchain,network,artifact})}' \
+            metadata/*.manifest.json > metadata/manifest.json
+          jq -e '.schema == 4 and (.bottles | length == 4)' metadata/manifest.json >/dev/null
+          ./homebrew-distill doctor --registry metadata/manifest.json
+          for record in metadata/verification-*.json; do
+            [ -f "$record" ] || continue
+            jq -e '.schema == 1 and .verification.status == "passed" and .verification.fresh_runner == true' "$record" >/dev/null
+            formula=$(jq -er '.formula' "$record")
+            arch=$(jq -er '.platform.arch' "$record")
+            bottle_tag=$(jq -er '.platform.bottle_tag' "$record")
+            sha256=$(jq -er '.artifact.sha256' "$record")
+            jq -e \
+              --arg formula "$formula" \
+              --arg arch "$arch" \
+              --arg tag "$bottle_tag" \
+              --arg sha256 "$sha256" \
+              'any(.bottles[]; .formula.name == $formula and .platform.arch == $arch and .platform.bottle_tag == $tag and .artifact.sha256 == $sha256)' \
+              metadata/manifest.json >/dev/null
+          done
+          tar -czf metadata.tar.gz -C metadata .
+          release_api="repos/$GITHUB_REPOSITORY/releases/tags/$DISTILL_RELEASE_TAG"
+          asset_count=$(gh api "$release_api" --jq '[.assets[] | select(.name != "checksums.txt")] | length')
+          digest_count=$(gh api "$release_api" --jq '[.assets[] | select(.name != "checksums.txt") | select((.digest | type) == "string" and (.digest | startswith("sha256:")))] | length')
+          test "$asset_count" -eq "$digest_count"
+          gh api "$release_api" \
+            --jq '.assets[] | select(.name != "checksums.txt") | "\(.digest | sub("^sha256:"; ""))  \(.name)"' \
+            > checksums.txt
+          checksum_count=$(wc -l < checksums.txt | tr -d ' ')
+          test "$checksum_count" -eq "$asset_count"
+          awk 'length($1) != 64 || $1 !~ /^[[:xdigit:]]+$/ || NF != 2 { bad=1 } END { exit bad }' checksums.txt
+          gh release upload "$DISTILL_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            metadata/manifest.json metadata.tar.gz checksums.txt
+          gh release edit "$DISTILL_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$DISTILL_RELEASE_TAG" \
+            --notes-file metadata/manifest.json \
+            --draft=false
