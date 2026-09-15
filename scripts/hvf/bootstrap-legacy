@@ -324,10 +324,27 @@ runtime_args_json=$(
   printf '%s' "$qemu_args" | jq \
     --arg code "$qemu_code" \
     --arg vars "$qemu_vars" \
-    'map(
+    '
+     def managed:
+       contains("{{RECOVERY}}") or
+       contains("{{INSTALL_MEDIA}}") or
+       contains("{{QEMU_MONITOR}}") or
+       contains("RecoveryImage") or
+       contains("RecoveryDevice") or
+       contains("InstallMedia") or
+       contains("InstallMediaDevice");
+     map(
        gsub("\\{\\{QEMU_CODE\\}\\}"; $code) |
        gsub("\\{\\{QEMU_VARS\\}\\}"; $vars)
-     )'
+     ) as $args
+     | [
+         range(0; ($args | length)) as $i
+         | select(
+             (($args[$i] | managed) | not) and
+             (($i + 1 >= ($args | length)) or (($args[$i + 1] | managed) | not))
+           )
+         | $args[$i]
+       ]'
 )
 printf '%s' "$runtime_args_json" | jq -e \
   'map(gsub("\\{\\{DISK\\}\\}|\\{\\{OPENCORE\\}\\}|\\{\\{SERIAL_LOG\\}\\}"; "")) | all(.[]; contains("{{") | not)' >/dev/null || {
