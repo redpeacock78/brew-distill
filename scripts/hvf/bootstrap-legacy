@@ -377,11 +377,11 @@ args_json=$(
          "-device", "ide-hd,id=OpenCoreDevice,bus=sata.2,drive=OpenCoreBoot"
        ] end
      | if any(.[]; contains($recovery)) then . else . + [
-         "-drive", ("id=RecoveryImage,if=none,format=raw,readonly=on,file=" + $recovery),
+         "-drive", ("id=RecoveryImage,if=none,format=raw,file=" + $recovery),
          "-device", "ide-hd,id=RecoveryDevice,bus=sata.3,drive=RecoveryImage"
        ] end
      | if any(.[]; contains($media)) then . else . + [
-         "-drive", ("id=InstallMedia,if=none,format=raw,readonly=on,file=" + $media),
+         "-drive", ("id=InstallMedia,if=none,format=raw,file=" + $media),
          "-device", "ide-hd,id=InstallMediaDevice,bus=sata.4,drive=InstallMedia"
        ] end
      | if any(.[]; contains($disk)) then . else . + [
