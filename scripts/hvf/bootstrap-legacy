@@ -95,12 +95,16 @@ test -f "$capabilities" || {
 capability() {
   [ "$($plutil_cmd -extract "options.$1" raw -o - "$capabilities" 2>/dev/null)" = "true" ]
 }
-for option in agreetolicense nointeraction volume installpackage; do
+for option in agreetolicense volume installpackage; do
   capability "$option" || {
     printf '%s\n' "bootstrap-legacy: installer does not expose --$option" >&2
     exit 1
   }
 done
+nointeraction_arg=
+if capability nointeraction; then
+  nointeraction_arg=' --nointeraction'
+fi
 
 base_system="$installer/Contents/SharedSupport/BaseSystem.dmg"
 test -f "$base_system" || {
@@ -222,7 +226,7 @@ disk_size=$(awk -v gib="$disk_gib" 'BEGIN { printf "%.1f", gib * 1.073741824 }')
 escaped_disk_size=$(printf '%s' "$disk_size" | sed 's/\\./\\\\./')
 command_file="$work_dir/install-command.txt"
 cat > "$command_file" <<EOF
-d=\$(diskutil list | awk '/\\*$escaped_disk_size GB/{print \$NF; exit}') && diskutil eraseDisk APFS MACOS \$d && /Volumes/InstallMedia/Contents/Resources/startosinstall --agreetolicense --volume /Volumes/MACOS --nointeraction --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg
+d=\$(diskutil list | awk '/\\*$escaped_disk_size GB/{print \$NF; exit}') && diskutil eraseDisk APFS MACOS \$d && /Volumes/InstallMedia/Contents/Resources/startosinstall --agreetolicense --volume /Volumes/MACOS$nointeraction_arg --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg
 EOF
 
 monitor="$work_dir/qemu-monitor.sock"

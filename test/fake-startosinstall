@@ -4,7 +4,6 @@ set -eu
 if [ "${1:-}" = "--usage" ]; then
   printf '%s\n' \
     "--agreetolicense, agree to the license." \
-    "--nointeraction, do not interact." \
     "--eraseinstall, erase the target volume." \
     "--installpackage, install a package <path>." \
     "--volume, target volume <path>."

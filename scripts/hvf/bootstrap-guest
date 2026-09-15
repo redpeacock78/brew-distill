@@ -32,12 +32,15 @@ has_capability() {
   [ "$($plutil_cmd -extract "options.$1" raw -o - "$capabilities" 2>/dev/null)" = "true" ]
 }
 
-if ! has_capability agreetolicense || ! has_capability nointeraction; then
-  printf '%s\n' "bootstrap-guest: installer lacks required headless options" >&2
+if ! has_capability agreetolicense; then
+  printf '%s\n' "bootstrap-guest: installer lacks --agreetolicense" >&2
   exit 1
 fi
 
-set -- --agreetolicense --nointeraction
+set -- --agreetolicense
+if has_capability nointeraction; then
+  set -- "$@" --nointeraction
+fi
 if [ "${DISTILL_ERASE_INSTALL:-0}" = "1" ]; then
   has_capability eraseinstall || {
     printf '%s\n' "bootstrap-guest: installer lacks --eraseinstall" >&2
