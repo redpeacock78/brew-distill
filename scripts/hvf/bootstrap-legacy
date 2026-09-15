@@ -312,9 +312,11 @@ printf '%s\\n' "\$status" > /Volumes/InstallMedia/install-script.status
 exit "\$status"
 EOF
 chmod 755 "$install_script"
-command_file="$output_dir/startosinstall-command.txt"
-cp "$install_script" "$command_file"
-chmod 644 "$command_file"
+command_file="$work_dir/install-command.txt"
+printf '%s\n' /Volumes/InstallMedia/brew-distill-install > "$command_file"
+command_diagnostic="$output_dir/startosinstall-command.txt"
+cp "$install_script" "$command_diagnostic"
+chmod 644 "$command_diagnostic"
 install_media="$work_dir/install-media.dmg"
 install_media_dmg_started=$(date +%s)
 hdiutil create -srcfolder "$media_root" -format UDRW -volname InstallMedia \
