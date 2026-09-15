@@ -263,7 +263,8 @@ jobs:
               metadata/manifest.json >/dev/null
           done
           tar -czf metadata.tar.gz -C metadata .
-          release_api="repos/$GITHUB_REPOSITORY/releases/tags/$DISTILL_RELEASE_TAG"
+          release_id=$(gh release view "$DISTILL_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json id --jq .id)
+          release_api="repos/$GITHUB_REPOSITORY/releases/$release_id"
           asset_count=$(gh api "$release_api" --jq '[.assets[] | select(.name != "checksums.txt")] | length')
           digest_count=$(gh api "$release_api" --jq '[.assets[] | select(.name != "checksums.txt") | select((.digest | type) == "string" and (.digest | startswith("sha256:")))] | length')
           test "$asset_count" -eq "$digest_count"
