@@ -135,6 +135,7 @@ test -f "${DISTILL_OPENCORE_DISK:-}" || {
   exit 1
 }
 opencore_disk=$DISTILL_OPENCORE_DISK
+opencore_disk=$(cd -- "$(dirname -- "$opencore_disk")" && pwd)/$(basename -- "$opencore_disk")
 
 virtual_size=$(
   "$qemu_img" info --output=json "$base" | jq -r '."virtual-size" // empty'
