@@ -373,7 +373,7 @@ args_json=$(
        gsub("\\{\\{QEMU_VARS\\}\\}"; $vars)
      ) as $args
      | if any($args[]; contains($opencore)) then $args else $args + [
-         "-drive", ("id=OpenCoreBoot,if=none,format=raw,readonly=on,file=" + $opencore),
+         "-drive", ("id=OpenCoreBoot,if=none,format=raw,file=" + $opencore),
          "-device", "ide-hd,id=OpenCoreDevice,bus=sata.2,drive=OpenCoreBoot"
        ] end
      | if any(.[]; contains($recovery)) then . else . + [

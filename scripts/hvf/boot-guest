@@ -73,7 +73,7 @@ args = args.map do |arg|
 end
 if opencore_disk && !args.any? { |arg| arg.include?(opencore_disk) }
   args += [
-    "-drive", "if=none,id=OpenCoreBoot,format=raw,readonly=on,file=#{opencore_disk}",
+    "-drive", "if=none,id=OpenCoreBoot,format=raw,file=#{opencore_disk}",
     "-device", "ide-hd,bus=sata.2,drive=OpenCoreBoot"
   ]
 end

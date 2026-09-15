@@ -96,6 +96,10 @@ DISTILL_ALLOW_NON_DARWIN=1 DISTILL_OPENCORE_DISK="$test_dir/opencore.img" \
   "$repo_dir/scripts/hvf/boot-guest" "$test_dir/boot-overlay.qcow2" "$test_dir/out" >/dev/null
 grep -F -- "$test_dir/opencore.img" "$test_dir/qemu.log" >/dev/null
 grep -F -- 'OpenCoreBoot' "$test_dir/qemu.log" >/dev/null
+if grep -F -- 'readonly=on' "$test_dir/qemu.log" >/dev/null; then
+  printf '%s\n' 'boot-guest attached OpenCore as read-only' >&2
+  exit 1
+fi
 
 cat > "$test_dir/verifier" <<'EOF'
 #!/bin/sh
