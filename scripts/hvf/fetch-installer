@@ -117,12 +117,17 @@ find_installer() {
         run_privileged "$plutil_cmd" -extract CFBundleShortVersionString raw -o - \
           "$candidate/Contents/Info.plist" 2>/dev/null || true
       )
-      if [ "$candidate_version" = "$version" ]; then
+      if [ -n "$installer_expected_bundle_version" ]; then
+        [ "$candidate_version" = "$installer_expected_bundle_version" ] || continue
+      elif [ "$candidate_version" != "$version" ]; then
+        continue
+      fi
+      if [ -x "$candidate/Contents/Resources/startosinstall" ]; then
         printf '%s\n' "$candidate"
         return 0
       fi
     done <<EOF
-$(run_privileged find "$search_root" -maxdepth 1 \( -type d -o -type l \) -name 'Install macOS *.app' -print | sort)
+$(run_privileged find "$search_root" -maxdepth 1 \( -type d -o -type l \) -name '*.app' -print | sort)
 EOF
   done <<EOF
 $installer_roots
@@ -147,6 +152,7 @@ installer_cmd=${DISTILL_INSTALLER_CMD:-/usr/sbin/installer}
 installer_package_log="$output_dir/installer-package.log"
 printf '%s\n' "no cached InstallAssistant package was extracted" > "$installer_package_log"
 attempted_package=
+installer_expected_bundle_version=
 extract_cached_installer() {
   installer_package=$(find_installer_package || true)
   [ -n "$installer_package" ] || return 1
@@ -179,6 +185,11 @@ extract_catalog_installer() {
   }
   catalog_helper=${DISTILL_INSTALLER_CATALOG_HELPER:-$(dirname -- "$0")/fetch-installer-catalog.py}
   catalog_record=$(python3 "$catalog_helper" "$version" 2>> "$installer_package_log") || return 1
+  installer_expected_bundle_version=$(printf '%s' "$catalog_record" | jq -er \
+    '.bundle_version | select(type == "string" and length > 0)') || {
+    printf '%s\n' "catalog record has no installer bundle version" >> "$installer_package_log"
+    return 1
+  }
   package_url=$(printf '%s' "$catalog_record" | jq -er \
     '.package_url | select(startswith("https://"))') || return 1
   package_path="$output_dir/InstallAssistant-$version.pkg"
@@ -256,9 +267,17 @@ run_privileged /bin/test -x "$installer/Contents/Resources/startosinstall" || {
   exit 1
 }
 
+bundle_version=$(run_privileged "$plutil_cmd" -extract CFBundleShortVersionString raw -o - \
+  "$installer/Contents/Info.plist" 2>/dev/null || true)
+[ -n "$bundle_version" ] || {
+  printf '%s\n' "fetch-installer: installer has no CFBundleShortVersionString" >&2
+  exit 1
+}
+
 jq -n \
   --arg version "$version" \
+  --arg bundle_version "$bundle_version" \
   --arg installer "$installer" \
-  '{schema:1,version:$version,bundle_version:$version,installer:$installer}' \
+  '{schema:1,version:$version,bundle_version:$bundle_version,installer:$installer}' \
   > "$output_dir/installer.json"
 printf '%s\n' "installer=$installer"

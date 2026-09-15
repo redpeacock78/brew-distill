@@ -57,12 +57,22 @@ def distribution_value(content: bytes, key: str) -> str:
     return ""
 
 
-def package_url(product: dict) -> str:
+def package_info(product: dict) -> tuple[str, str]:
     for package in product.get("Packages", []):
         url = package.get("URL", "")
         if urlsplit(url).path.endswith("/InstallAssistant.pkg"):
-            return url
-    return ""
+            return url, package.get("MetadataURL", "")
+    return "", ""
+
+
+def package_value(content: bytes, key: str) -> str:
+    text = content.decode("utf-8", "replace")
+    match = re.search(
+        rf"<bundle\b[^>]*\b{re.escape(key)}=[\"']([^\"']+)[\"']",
+        text,
+        re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else ""
 
 
 def resolve(version: str) -> dict:
@@ -71,13 +81,14 @@ def resolve(version: str) -> dict:
     for product_id, product in catalog.get("Products", {}).items():
         if not product.get("ExtendedMetaInfo", {}).get("InstallAssistantPackageIdentifiers"):
             continue
-        package = package_url(product)
+        package, package_metadata = package_info(product)
         if not package:
             continue
         distributions = product.get("Distributions", {})
         distribution = distributions.get("English") or distributions.get("en", "")
         candidate_version = ""
         build = ""
+        bundle_version = ""
         if distribution:
             try:
                 content = fetch(distribution)
@@ -85,6 +96,12 @@ def resolve(version: str) -> dict:
                 content = b""
             candidate_version = distribution_value(content, "VERSION")
             build = distribution_value(content, "BUILD")
+        if package_metadata:
+            try:
+                content = fetch(package_metadata)
+            except (OSError, ValueError):
+                content = b""
+            bundle_version = package_value(content, "CFBundleShortVersionString")
         if not candidate_version:
             metadata_url = product.get("ServerMetadataURL", "")
             if metadata_url:
@@ -100,6 +117,7 @@ def resolve(version: str) -> dict:
                 "product_id": product_id,
                 "version": candidate_version,
                 "build": build,
+                "bundle_version": bundle_version,
                 "package_url": package,
             }
     raise RuntimeError(f"Apple catalog has no InstallAssistant package for {version}")
