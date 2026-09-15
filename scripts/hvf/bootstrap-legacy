@@ -69,7 +69,7 @@ cleanup() {
     attach_log="$output_dir/install-media-attach.log"
     mkdir -p "$media_mount"
     if hdiutil attach -readonly -nobrowse -mountpoint "$media_mount" "$install_media" >"$attach_log" 2>&1; then
-      for media_file in diskutil-list.txt target-disk-info.txt install-script.log install-script.status startosinstall.log; do
+      for media_file in diskutil-list.txt target-disk-info.txt target-volume-info.txt install-script.log install-script.status startosinstall.log; do
         if [ -f "$media_mount/$media_file" ]; then
           cp "$media_mount/$media_file" "$output_dir/$media_file"
         fi
@@ -177,7 +177,8 @@ for option in agreetolicense installpackage; do
     exit 1
   }
 done
-if capability volume; then
+# Ventura accepts --volume from Recovery even though startosinstall --usage omits it.
+if capability volume || [ "$major" = "13" ]; then
   install_target_args=' --volume /Volumes/MACOS'
 elif capability eraseinstall && capability newvolumename; then
   install_target_args=' --eraseinstall --newvolumename MACOS'
@@ -357,6 +358,10 @@ test -n "\$d"
 diskutil info "\$d" > /Volumes/InstallMedia/target-disk-info.txt 2>&1
 cat /Volumes/InstallMedia/target-disk-info.txt
 diskutil eraseDisk APFS MACOS "\$d"
+target_volume=/Volumes/MACOS
+test -d "\$target_volume"
+diskutil info "\$target_volume" > /Volumes/InstallMedia/target-volume-info.txt 2>&1
+cat /Volumes/InstallMedia/target-volume-info.txt
 printf '%s\\n' "STARTOSINSTALL_BEGIN \$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 set +e
 /Volumes/InstallMedia/Contents/Resources/startosinstall \\

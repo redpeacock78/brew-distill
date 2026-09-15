@@ -61,6 +61,8 @@ install_script="$test_dir/install-script.sh"
 awk 'BEGIN {emit=0} $0 == "cat > \"$install_script\" <<EOF" {emit=1; next} emit {if ($0 == "EOF") exit; print}' \
   "$repo_dir/scripts/hvf/bootstrap-legacy" | sed -e 's/\\\$/\$/g' -e 's/\\\\/\\/g' > "$install_script"
 sh -n "$install_script"
+grep -F -- '--volume /Volumes/MACOS' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'target-volume-info.txt' "$install_script" >/dev/null
 disk_list="$test_dir/diskutil-list.txt"
 cat > "$disk_list" <<'EOF'
 /dev/disk0 (internal, physical):
