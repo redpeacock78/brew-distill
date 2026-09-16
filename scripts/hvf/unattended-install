@@ -481,7 +481,9 @@ def run
     waiting_for_guest_boot = false
     guest_boot_started = nil
     while monotonic - started < @total_budget
-      frame = capture_frame
+      frame = capture_frame_tolerating_stall("waiting for guest completion")
+      next sleep(@poll) if frame.nil? && @poll.positive?
+      next if frame.nil?
       digest = frame.digest
       changed = frame.valid? && digest != seen
       if changed
@@ -584,6 +586,16 @@ end
     frame
   end
 
+  def capture_frame_tolerating_stall(context)
+    capture_frame
+  rescue UnattendedError => error
+    @frame_capture_failures += 1
+    if @frame_capture_failures == 1 || (@frame_capture_failures % 10).zero?
+      event "frame capture unavailable while #{context} (#{@frame_capture_failures}): #{error.message}"
+    end
+    nil
+  end
+
   def wait_for_terminal
     wait_for(@terminal_timeout, "the recovery Terminal") do
       frame = capture_frame
@@ -653,15 +665,7 @@ end
         save_current_frame("screen-first-reboot.ppm")
         return @last_frame
       end
-      frame = begin
-        capture_frame
-      rescue UnattendedError => error
-        @frame_capture_failures += 1
-        if @frame_capture_failures == 1 || (@frame_capture_failures % 10).zero?
-          event "frame capture unavailable while waiting for first reboot (#{@frame_capture_failures}): #{error.message}"
-        end
-        nil
-      end
+      frame = capture_frame_tolerating_stall("waiting for first reboot")
       elapsed = monotonic - @command_entered_at
       checkpoints.each do |second, name|
         if elapsed >= second

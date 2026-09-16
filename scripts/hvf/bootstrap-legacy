@@ -612,6 +612,10 @@ DISTILL_UNATTENDED_FRAME_LOG="$output_dir/unattended-frames.jsonl" \
   > "$output_dir/unattended-install.log" 2>&1
 unattended_status=$?
 set -e
+if [ "$unattended_status" -ne 0 ]; then
+  printf '%s\n' 'unattended-install failed; recent driver events:' >&2
+  tail -n 80 "$output_dir/unattended-install.log" >&2 || true
+fi
 if [ -s "$output_dir/unattended-install.json" ]; then
   guest_boot_seconds=$(jq -r '.guest_boot_seconds // empty' "$output_dir/unattended-install.json" || true)
   guest_install_seconds=$(jq -r '.guest_install_seconds // empty' "$output_dir/unattended-install.json" || true)
