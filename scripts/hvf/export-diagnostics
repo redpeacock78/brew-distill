@@ -27,7 +27,8 @@ find "$output_dir" -type f \( \
   -o -name 'startosinstall-command.txt' -o -name 'startosinstall-package-info.txt' \
   -o -name 'diskutil-list.txt' -o -name 'target-disk-info.txt' \
   -o -name 'target-volume-info.txt' \
-  -o -name 'startosinstall-environment.txt' -o -name 'startosinstall-watch.log' \
+  -o -name 'startosinstall-environment.txt' -o -name 'startosinstall-events.log' \
+  -o -name 'startosinstall-watch.log' \
   -o -name 'install-script.log' \
   -o -name 'install-script.status' -o -name 'startosinstall.log' \
   -o -name 'install-media-attach.log' -o -name 'recovery-image.json' \

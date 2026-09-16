@@ -7,7 +7,8 @@ if [ "${1:-}" = "--usage" ]; then
     "--eraseinstall, erase the target volume." \
     "--installpackage, install a package <path>." \
     "--newvolumename, name the new volume." \
-    "--rebootdelay, delay reboot by seconds."
+    "--rebootdelay, delay reboot by seconds." \
+    "--pidtosignal, signal a process after preparing."
   exit 0
 fi
 printf '%s\n' "$*" >> "$STARTOSINSTALL_LOG"

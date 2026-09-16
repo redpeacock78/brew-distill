@@ -37,6 +37,7 @@ installpackage=0
 volume=0
 newvolumename=0
 rebootdelay=0
+pidtosignal=0
 if has_option --agreetolicense; then agreetolicense=1; fi
 if has_option --nointeraction; then nointeraction=1; fi
 if has_option --eraseinstall; then eraseinstall=1; fi
@@ -44,6 +45,7 @@ if has_option --installpackage; then installpackage=1; fi
 if has_option --volume; then volume=1; fi
 if has_option --newvolumename; then newvolumename=1; fi
 if has_option --rebootdelay; then rebootdelay=1; fi
+if has_option --pidtosignal; then pidtosignal=1; fi
 
 metadata_tmp=$(mktemp "${TMPDIR:-/tmp}/brew-distill-installer-capabilities.XXXXXX")
 cleanup() {
@@ -69,6 +71,7 @@ bool_value() {
 "$plutil_cmd" -insert options.volume -bool "$(bool_value "$volume")" "$metadata_tmp"
 "$plutil_cmd" -insert options.newvolumename -bool "$(bool_value "$newvolumename")" "$metadata_tmp"
 "$plutil_cmd" -insert options.rebootdelay -bool "$(bool_value "$rebootdelay")" "$metadata_tmp"
+"$plutil_cmd" -insert options.pidtosignal -bool "$(bool_value "$pidtosignal")" "$metadata_tmp"
 "$plutil_cmd" -convert json -o "$output_dir/installer-capabilities.json" "$metadata_tmp"
 
 if [ "$usage_status" -ne 0 ]; then

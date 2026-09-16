@@ -401,6 +401,7 @@ jobs:
             out/hvf/target-disk-info.txt
             out/hvf/target-volume-info.txt
             out/hvf/startosinstall-environment.txt
+            out/hvf/startosinstall-events.log
             out/hvf/startosinstall-watch.log
             out/hvf/install-script.log
             out/hvf/install-script.status

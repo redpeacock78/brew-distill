@@ -84,7 +84,7 @@ cleanup() {
     attach_log="$output_dir/install-media-attach.log"
     mkdir -p "$media_mount"
     if hdiutil attach -readonly -nobrowse -mountpoint "$media_mount" "$install_media" >"$attach_log" 2>&1; then
-      for media_file in diskutil-list.txt target-disk-info.txt target-volume-info.txt startosinstall-environment.txt startosinstall-watch.log install-script.log install-script.status startosinstall.log; do
+      for media_file in diskutil-list.txt target-disk-info.txt target-volume-info.txt startosinstall-environment.txt startosinstall-events.log startosinstall-watch.log install-script.log install-script.status startosinstall.log; do
         if [ -f "$media_mount/$media_file" ]; then
           cp "$media_mount/$media_file" "$output_dir/$media_file"
         fi
@@ -228,6 +228,12 @@ fi
 rebootdelay_arg=
 if capability rebootdelay; then
   rebootdelay_arg=' --rebootdelay 0'
+fi
+pidtosignal_arg=
+pidtosignal_enabled=0
+if capability pidtosignal; then
+  pidtosignal_arg=' --pidtosignal $$'
+  pidtosignal_enabled=1
 fi
 
 test -f "$opencore_dir/EFI/BOOT/BOOTx64.efi" || {
@@ -412,9 +418,18 @@ cat /Volumes/InstallMedia/target-volume-info.txt
   diskutil apfs list 2>&1 || true
 } > /Volumes/InstallMedia/startosinstall-environment.txt
 printf '%s\\n' "STARTOSINSTALL_BEGIN \$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+install_events=/Volumes/InstallMedia/startosinstall-events.log
+printf '%s\\n' "STARTOSINSTALL_BEGIN \$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "\$install_events"
+prepare_signal_handler() {
+  printf '%s\\n' "STARTOSINSTALL_PREPARE_COMPLETE \$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$install_events"
+  if [ "$pidtosignal_enabled" = "1" ] && [ -n "\${startosinstall_pid:-}" ]; then
+    kill -USR1 "\$startosinstall_pid" 2>/dev/null || true
+  fi
+}
+trap prepare_signal_handler USR1
 set +e
 /Volumes/InstallMedia/Contents/Resources/startosinstall \\
-  --agreetolicense$install_target_args$nointeraction_arg$rebootdelay_arg \\
+  --agreetolicense$install_target_args$nointeraction_arg$rebootdelay_arg$pidtosignal_arg \\
   --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg \\
   > /Volumes/InstallMedia/startosinstall.log 2>&1 &
 startosinstall_pid=\$!
