@@ -167,6 +167,7 @@ require "json"
 require "socket"
 
 socket_path, trigger = ARGV
+event_name = ENV.fetch("QMP_EVENT", "RESET")
 File.unlink(socket_path) if File.exist?(socket_path)
 server = UNIXServer.new(socket_path)
 client = server.accept
@@ -175,7 +176,7 @@ reset_delay = ENV.fetch("QMP_RESET_DELAY", "0").to_f
 sender = Thread.new do
   sleep 0.01 until File.file?(trigger)
   sleep reset_delay if reset_delay.positive?
-  client.write(JSON.generate("event" => "RESET", "data" => {"guest" => true}) + "\n")
+  client.write(JSON.generate("event" => event_name, "data" => {"guest" => true}) + "\n")
 rescue IOError, SystemCallError
   nil
 end
@@ -256,6 +257,58 @@ unset server_pid
 kill "$qmp_server_pid" 2>/dev/null || true
 wait "$qmp_server_pid" 2>/dev/null || true
 unset qmp_server_pid
+shutdown_monitor="$test_dir/s.sock"
+shutdown_commands="$test_dir/s.log"
+shutdown_output="$test_dir/s.json"
+shutdown_qmp_monitor="$test_dir/s.qmp"
+shutdown_trigger="$test_dir/s.trg"
+QMP_RESET_TRIGGER="$shutdown_trigger" HMP_STALL_AFTER=13 HMP_STALL_SECONDS=0 \
+  ruby "$test_dir/fake-monitor.rb" "$shutdown_monitor" "$shutdown_commands" &
+server_pid=$!
+QMP_EVENT=SHUTDOWN QMP_RESET_DELAY=0.1 ruby "$test_dir/fake-qmp.rb" \
+  "$shutdown_qmp_monitor" "$shutdown_trigger" &
+qmp_server_pid=$!
+(sleep 2; touch "$shutdown_trigger") &
+shutdown_trigger_pid=$!
+
+if DISTILL_UNATTENDED_FRAME_WAIT=0 \
+  DISTILL_UNATTENDED_MONITOR_TIMEOUT=0.2 \
+  DISTILL_UNATTENDED_PICKER_SETTLE=0 \
+  DISTILL_UNATTENDED_RECOVERY_SETTLE=0 \
+  DISTILL_UNATTENDED_RECOVERY_STILL_MAX=1 \
+  DISTILL_UNATTENDED_RECOVERY_STILL_FRAMES=2 \
+  DISTILL_UNATTENDED_TERMINAL_WAIT=0 \
+  DISTILL_UNATTENDED_TERMINAL_TIMEOUT=10 \
+  DISTILL_UNATTENDED_TERMINAL_PROBE_DELAY=0 \
+  DISTILL_UNATTENDED_TYPE_SETTLE=0 \
+  DISTILL_UNATTENDED_INSTALL_REBOOT_GRACE=10 \
+  DISTILL_UNATTENDED_INSTALL_REBOOT_TIMEOUT=10 \
+  DISTILL_UNATTENDED_DONE_QUIET=0 \
+  DISTILL_UNATTENDED_HUNG_STILL=10 \
+  DISTILL_UNATTENDED_PICKER_REPRESS=0 \
+  DISTILL_UNATTENDED_TOTAL_BUDGET=30 \
+  DISTILL_UNATTENDED_POLL=0 \
+  DISTILL_UNATTENDED_KEY_DELAY=0 \
+  DISTILL_UNATTENDED_TYPE_DELAY=0 \
+  ruby "$repo_dir/scripts/hvf/unattended-install" \
+    --monitor "$shutdown_monitor" --disk-gib 64 --command-file "$command_file" \
+    --qmp-monitor "$shutdown_qmp_monitor" \
+    --output "$shutdown_output" --frame "$test_dir/shutdown-frame.ppm" > "$test_dir/shutdown-driver.log" 2>&1; then
+  cat "$test_dir/shutdown-driver.log" >&2
+  exit 1
+fi
+jq -e '.status == "failed" and (.error | contains("guest shutdown")) and .install_command_submitted == true' \
+  "$shutdown_output" >/dev/null
+jq -s -e 'any(.[]; .event == "SHUTDOWN")' "$test_dir/qmp-events.jsonl" >/dev/null
+kill "$server_pid" 2>/dev/null || true
+wait "$server_pid" 2>/dev/null || true
+unset server_pid
+kill "$qmp_server_pid" 2>/dev/null || true
+wait "$qmp_server_pid" 2>/dev/null || true
+unset qmp_server_pid
+kill "$shutdown_trigger_pid" 2>/dev/null || true
+wait "$shutdown_trigger_pid" 2>/dev/null || true
+unset shutdown_trigger_pid
 shell_monitor="$test_dir/shell-monitor.sock"
 shell_commands="$test_dir/shell-commands.log"
 shell_output="$test_dir/shell-unattended.json"

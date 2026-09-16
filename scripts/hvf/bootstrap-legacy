@@ -494,6 +494,10 @@ status=\$?
 set -e
 printf '%s\\n' "STARTOSINSTALL_STATUS=\$status"
 printf '%s\\n' "\$status" > /Volumes/InstallMedia/install-script.status
+if [ "\$status" -ne 0 ]; then
+  printf '%s\\n' "STARTOSINSTALL_FAILED \$(date -u +%Y-%m-%dT%H:%M:%SZ) status=\$status" >> "\$install_events"
+  /sbin/shutdown -h now >> /Volumes/InstallMedia/install-script.log 2>&1 || true
+fi
 exit "\$status"
 EOF
 chmod 755 "$install_script"

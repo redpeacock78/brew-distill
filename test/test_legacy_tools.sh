@@ -66,6 +66,8 @@ grep -F -- 'target-volume-info.txt' "$install_script" >/dev/null
 grep -F -- 'startosinstall-environment.txt' "$install_script" >/dev/null
 grep -F -- 'startosinstall-watch.log' "$install_script" >/dev/null
 grep -F -- 'startosinstall-events.log' "$install_script" >/dev/null
+grep -F -- 'STARTOSINSTALL_FAILED' "$install_script" >/dev/null
+grep -F -- '/sbin/shutdown -h now' "$install_script" >/dev/null
 grep -F -- '--pidtosignal $$' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'PROCESS_TREE' "$install_script" >/dev/null
 grep -F -- 'rotation_rate=' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null

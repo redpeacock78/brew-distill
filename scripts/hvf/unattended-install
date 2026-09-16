@@ -259,8 +259,16 @@ class Qmp
   end
 
   def reset_since?(baseline)
+    event_since?(baseline, "RESET")
+  end
+
+  def shutdown_since?(baseline)
+    event_since?(baseline, "SHUTDOWN")
+  end
+
+  def event_since?(baseline, name)
     @mutex.synchronize do
-      @events.drop(baseline || 0).any? { |event| event["event"] == "RESET" }
+      @events.drop(baseline || 0).any? { |event| event["event"] == name }
     end
   end
 
@@ -660,6 +668,9 @@ end
     }
     next_periodic = @frame_interval
     loop do
+      if @qmp&.shutdown_since?(@qmp_baseline)
+        raise UnattendedError, "guest shutdown before the installer first reboot"
+      end
       if @qmp&.reset_since?(@qmp_baseline)
         event "QMP RESET event observed; first reboot reached"
         save_current_frame("screen-first-reboot.ppm")
