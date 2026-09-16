@@ -452,10 +452,29 @@ prepare_signal_handler() {
 }
 trap prepare_signal_handler USR1
 set +e
-/Volumes/InstallMedia/Contents/Resources/startosinstall \\
-  --agreetolicense$install_target_args$nointeraction_arg$rebootdelay_arg$pidtosignal_arg \\
-  --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg \\
-  > /Volumes/InstallMedia/startosinstall.log 2>&1 &
+run_startosinstall() {
+  startosinstall_child=
+  forward_prepare_signal() {
+    if [ -n "\${startosinstall_child:-}" ]; then
+      kill -USR1 "\$startosinstall_child" 2>/dev/null || true
+    fi
+  }
+  trap forward_prepare_signal USR1
+  /Volumes/InstallMedia/Contents/Resources/startosinstall \\
+    --agreetolicense$install_target_args$nointeraction_arg$rebootdelay_arg$pidtosignal_arg \\
+    --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg \\
+    > /Volumes/InstallMedia/startosinstall.log 2>&1 &
+  startosinstall_child=\$!
+  wait "\$startosinstall_child"
+  status=\$?
+  if [ "\$status" -ne 0 ]; then
+    printf '%s\\n' "STARTOSINSTALL_FAILED \$(date -u +%Y-%m-%dT%H:%M:%SZ) status=\$status" >> "\$install_events"
+    printf '%s\\n' "\$status" > /Volumes/InstallMedia/install-script.status
+    /sbin/shutdown -h now >> /Volumes/InstallMedia/install-script.log 2>&1 || true
+  fi
+  return "\$status"
+}
+run_startosinstall &
 startosinstall_pid=\$!
 process_tree() {
   ps -axo pid=,ppid=,stat=,etime=,%cpu=,%mem=,command= 2>&1 | awk -v root="\$startosinstall_pid" '
@@ -494,10 +513,6 @@ status=\$?
 set -e
 printf '%s\\n' "STARTOSINSTALL_STATUS=\$status"
 printf '%s\\n' "\$status" > /Volumes/InstallMedia/install-script.status
-if [ "\$status" -ne 0 ]; then
-  printf '%s\\n' "STARTOSINSTALL_FAILED \$(date -u +%Y-%m-%dT%H:%M:%SZ) status=\$status" >> "\$install_events"
-  /sbin/shutdown -h now >> /Volumes/InstallMedia/install-script.log 2>&1 || true
-fi
 exit "\$status"
 EOF
 chmod 755 "$install_script"
