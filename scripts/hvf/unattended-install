@@ -390,6 +390,7 @@ class Driver
     @command_entered_at = nil
     @last_frame = nil
     @qmp_baseline = nil
+    @frame_capture_failures = 0
   end
 
 def run
@@ -597,9 +598,15 @@ end
   end
 
   def save_current_frame(name)
-    return unless File.file?(@frame_path)
+    source = @frame_path
+    unless File.file?(source)
+      source = Dir[File.join(@capture_dir, "screen-*.ppm")]
+               .reject { |path| File.basename(path) == name }
+               .max_by { |path| File.mtime(path) }
+    end
+    return unless source && File.file?(source)
 
-    FileUtils.cp(@frame_path, File.join(@capture_dir, name))
+    FileUtils.cp(source, File.join(@capture_dir, name))
   rescue Errno::ENOENT
     nil
   end
@@ -640,7 +647,20 @@ end
     }
     next_periodic = @frame_interval
     loop do
-      frame = capture_frame
+      if @qmp&.reset_since?(@qmp_baseline)
+        event "QMP RESET event observed; first reboot reached"
+        save_current_frame("screen-first-reboot.ppm")
+        return @last_frame
+      end
+      frame = begin
+        capture_frame
+      rescue UnattendedError => error
+        @frame_capture_failures += 1
+        if @frame_capture_failures == 1 || (@frame_capture_failures % 10).zero?
+          event "frame capture unavailable while waiting for first reboot (#{@frame_capture_failures}): #{error.message}"
+        end
+        nil
+      end
       elapsed = monotonic - @command_entered_at
       checkpoints.each do |second, name|
         if elapsed >= second
@@ -655,9 +675,9 @@ end
       if @qmp&.reset_since?(@qmp_baseline)
         event "QMP RESET event observed; first reboot reached"
         save_current_frame("screen-first-reboot.ppm")
-        return frame
+        return frame || @last_frame
       end
-      if elapsed >= @install_reboot_grace && picker_like?(frame)
+      if frame && elapsed >= @install_reboot_grace && picker_like?(frame)
         save_current_frame("screen-first-reboot.ppm")
         return frame
       end
@@ -739,6 +759,7 @@ end
         guest_boot_seconds: guest_boot_seconds,
         guest_install_seconds: guest_install_seconds,
         install_command_submitted: !@command_entered_at.nil?,
+        frame_capture_failures: @frame_capture_failures,
         picker_resolution: picker_resolution,
         recovery_resolution: recovery_resolution,
         events: @events

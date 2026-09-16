@@ -37,10 +37,13 @@ require "socket"
 
 socket_path, command_log = ARGV
 qmp_trigger = ENV["QMP_RESET_TRIGGER"]
+stall_after = ENV.fetch("HMP_STALL_AFTER", "0").to_i
+stall_seconds = ENV.fetch("HMP_STALL_SECONDS", "0").to_f
 File.unlink(socket_path) if File.exist?(socket_path)
 server = UNIXServer.new(socket_path)
 paused = false
 screendumps = 0
+stall_triggered = false
 
 def write_frame(path, width, height, red, green, blue)
   pixel = [red, green, blue].pack("C3")
@@ -135,7 +138,21 @@ File.open(command_log, "w") do |log|
                else
                  ""
                end
-    client.write("#{response}\n(qemu) ")
+    if stall_after.positive? && screendumps >= stall_after && !stall_triggered
+      stall_triggered = true
+      Thread.new(client) do |stalled_client|
+        sleep stall_seconds
+        stalled_client.close
+      rescue IOError, SystemCallError
+        nil
+      end
+      next
+    end
+    begin
+      client.write("#{response}\n(qemu) ")
+    rescue IOError, SystemCallError
+      nil
+    end
     client.close
   end
 end
@@ -154,8 +171,10 @@ File.unlink(socket_path) if File.exist?(socket_path)
 server = UNIXServer.new(socket_path)
 client = server.accept
 client.write(JSON.generate("QMP" => {"version" => {}, "capabilities" => []}) + "\n")
+reset_delay = ENV.fetch("QMP_RESET_DELAY", "0").to_f
 sender = Thread.new do
   sleep 0.01 until File.file?(trigger)
+  sleep reset_delay if reset_delay.positive?
   client.write(JSON.generate("event" => "RESET", "data" => {"guest" => true}) + "\n")
 rescue IOError, SystemCallError
   nil
@@ -172,12 +191,14 @@ server.close
 RUBY
 chmod 755 "$test_dir/fake-qmp.rb"
 
-QMP_RESET_TRIGGER="$qmp_trigger" ruby "$test_dir/fake-monitor.rb" "$monitor" "$commands" &
+QMP_RESET_TRIGGER="$qmp_trigger" HMP_STALL_AFTER=13 HMP_STALL_SECONDS=0 \
+  ruby "$test_dir/fake-monitor.rb" "$monitor" "$commands" &
 server_pid=$!
-ruby "$test_dir/fake-qmp.rb" "$qmp_monitor" "$qmp_trigger" &
+QMP_RESET_DELAY=0.1 ruby "$test_dir/fake-qmp.rb" "$qmp_monitor" "$qmp_trigger" &
 qmp_server_pid=$!
 
 if ! DISTILL_UNATTENDED_FRAME_WAIT=0 \
+  DISTILL_UNATTENDED_MONITOR_TIMEOUT=0.2 \
   DISTILL_UNATTENDED_PICKER_SETTLE=0 \
   DISTILL_UNATTENDED_RECOVERY_SETTLE=0 \
   DISTILL_UNATTENDED_RECOVERY_STILL_MAX=1 \
@@ -204,7 +225,7 @@ if ! DISTILL_UNATTENDED_FRAME_WAIT=0 \
   exit 1
 fi
 
-jq -e '.schema == 1 and .status == "passed" and .guest_install_seconds >= 0 and .install_command_submitted == true and .reboots == 1 and any(.events[]; contains("install finished"))' \
+jq -e '.schema == 1 and .status == "passed" and .frame_capture_failures >= 1 and .guest_install_seconds >= 0 and .install_command_submitted == true and .reboots == 1 and any(.events[]; contains("install finished"))' \
   "$output" >/dev/null
 test -s "$test_dir/screen-before-command.ppm"
 test -s "$test_dir/screen-terminal-navigation-1.ppm"
