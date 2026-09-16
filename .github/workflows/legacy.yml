@@ -350,6 +350,8 @@ jobs:
             out/hvf/diskutil-list.txt
             out/hvf/target-disk-info.txt
             out/hvf/target-volume-info.txt
+            out/hvf/startosinstall-environment.txt
+            out/hvf/startosinstall-watch.log
             out/hvf/install-script.log
             out/hvf/install-script.status
             out/hvf/startosinstall.log

@@ -63,6 +63,8 @@ awk 'BEGIN {emit=0} $0 == "cat > \"$install_script\" <<EOF" {emit=1; next} emit 
 sh -n "$install_script"
 grep -F -- '--volume /Volumes/MACOS' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'target-volume-info.txt' "$install_script" >/dev/null
+grep -F -- 'startosinstall-environment.txt' "$install_script" >/dev/null
+grep -F -- 'startosinstall-watch.log' "$install_script" >/dev/null
 disk_list="$test_dir/diskutil-list.txt"
 cat > "$disk_list" <<'EOF'
 /dev/disk0 (internal, physical):

@@ -69,7 +69,7 @@ cleanup() {
     attach_log="$output_dir/install-media-attach.log"
     mkdir -p "$media_mount"
     if hdiutil attach -readonly -nobrowse -mountpoint "$media_mount" "$install_media" >"$attach_log" 2>&1; then
-      for media_file in diskutil-list.txt target-disk-info.txt target-volume-info.txt install-script.log install-script.status startosinstall.log; do
+      for media_file in diskutil-list.txt target-disk-info.txt target-volume-info.txt startosinstall-environment.txt startosinstall-watch.log install-script.log install-script.status startosinstall.log; do
         if [ -f "$media_mount/$media_file" ]; then
           cp "$media_mount/$media_file" "$output_dir/$media_file"
         fi
@@ -362,12 +362,29 @@ target_volume=/Volumes/MACOS
 test -d "\$target_volume"
 diskutil info "\$target_volume" > /Volumes/InstallMedia/target-volume-info.txt 2>&1
 cat /Volumes/InstallMedia/target-volume-info.txt
+{
+  printf '%s\\n' "ENVIRONMENT \$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  csrutil status 2>&1 || true
+  df -h "\$target_volume" /Volumes/InstallMedia 2>&1 || true
+  diskutil apfs list 2>&1 || true
+} > /Volumes/InstallMedia/startosinstall-environment.txt
 printf '%s\\n' "STARTOSINSTALL_BEGIN \$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 set +e
 /Volumes/InstallMedia/Contents/Resources/startosinstall \\
   --agreetolicense$install_target_args$nointeraction_arg$rebootdelay_arg \\
   --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg \\
-  > /Volumes/InstallMedia/startosinstall.log 2>&1
+  > /Volumes/InstallMedia/startosinstall.log 2>&1 &
+startosinstall_pid=\$!
+while kill -0 "\$startosinstall_pid" 2>/dev/null; do
+  {
+    printf '%s\\n' "PROCESS \$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    ps -p "\$startosinstall_pid" -o pid=,ppid=,stat=,%cpu=,%mem=,command= 2>&1 || true
+    df -h "\$target_volume" /Volumes/InstallMedia 2>&1 || true
+    diskutil info "\$target_volume" 2>&1 || true
+  } >> /Volumes/InstallMedia/startosinstall-watch.log 2>&1
+  sleep 30
+done
+wait "\$startosinstall_pid"
 status=\$?
 set -e
 printf '%s\\n' "STARTOSINSTALL_STATUS=\$status"
