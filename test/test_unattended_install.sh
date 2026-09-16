@@ -225,7 +225,7 @@ if ! DISTILL_UNATTENDED_FRAME_WAIT=0 \
   exit 1
 fi
 
-jq -e '.schema == 1 and .status == "passed" and .frame_capture_failures >= 1 and .guest_install_seconds >= 0 and .install_command_submitted == true and .reboots == 1 and any(.events[]; contains("install finished"))' \
+jq -e '.schema == 1 and .status == "passed" and .frame_capture_failures >= 1 and .guest_install_seconds >= 0 and .install_command_submitted == true and .reboots == 1 and any(.events[]; contains("recovery media backend detached")) and any(.events[]; contains("install finished"))' \
   "$output" >/dev/null
 test -s "$test_dir/screen-before-command.ppm"
 test -s "$test_dir/screen-terminal-navigation-1.ppm"

@@ -469,6 +469,7 @@ def run
     wait_for(120, "QEMU to pause") { @monitor.command("info status").match?(/paused/i) }
     response = @monitor.command "drive_del RecoveryImage"
     raise UnattendedError, "cannot detach recovery media: #{response}" if response.match?(/error|not found/i)
+    event "recovery media backend detached"
     sleep 2
     @monitor.command "cont"
 

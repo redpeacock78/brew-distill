@@ -23,6 +23,11 @@ on:
         required: true
         default: '{"formulas":["csound"]}'
         type: string
+      install_reboot_timeout:
+        description: Seconds to wait for the installer's first reboot
+        required: true
+        default: "1800"
+        type: string
 
 permissions:
   contents: write
@@ -47,6 +52,7 @@ jobs:
       DISTILL_UNATTENDED_RECOVERY_STILL_FRAMES: "3"
       DISTILL_UNATTENDED_RECOVERY_STILL_POLL: "3"
       DISTILL_UNATTENDED_FRAME_INTERVAL: "60"
+      DISTILL_UNATTENDED_INSTALL_REBOOT_TIMEOUT: ${{ inputs.install_reboot_timeout }}
       DISTILL_BATCH_JSON: ${{ inputs.batch }}
       DISTILL_LEGACY_BOOTSTRAP: ${{ vars.DISTILL_LEGACY_BOOTSTRAP }}
       DISTILL_OPENCORE_DIR: ${{ vars.DISTILL_OPENCORE_DIR }}
@@ -135,6 +141,16 @@ jobs:
 
       - name: Validate Legacy inputs
         run: |
+          case "$DISTILL_UNATTENDED_INSTALL_REBOOT_TIMEOUT" in
+            ''|*[!0-9]*)
+              echo "Legacy install reboot timeout must be an integer" >&2
+              exit 1
+              ;;
+          esac
+          test "$DISTILL_UNATTENDED_INSTALL_REBOOT_TIMEOUT" -ge 60 || {
+            echo "Legacy install reboot timeout must be at least 60 seconds" >&2
+            exit 1
+          }
           test -n "$HOMEBREW_ARTIFACT_DOMAIN" || {
             echo "Legacy requires the DISTILL_ARTIFACT_DOMAIN repository variable" >&2
             exit 1
