@@ -65,7 +65,9 @@ grep -F -- '--volume /Volumes/MACOS' "$repo_dir/scripts/hvf/bootstrap-legacy" >/
 grep -F -- 'target-volume-info.txt' "$install_script" >/dev/null
 grep -F -- 'startosinstall-environment.txt' "$install_script" >/dev/null
 grep -F -- 'startosinstall-watch.log' "$install_script" >/dev/null
+grep -F -- 'PROCESS_TREE' "$install_script" >/dev/null
 grep -F -- 'rotation_rate=' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'disk_rotation_rate=${DISTILL_QEMU_DISK_ROTATION_RATE:-0}' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'DISTILL_QEMU_DISK_CACHE' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'qemu-launch.json' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'osk=<redacted>' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null

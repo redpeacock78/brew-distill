@@ -36,6 +36,14 @@ on:
         options:
           - writeback
           - unsafe
+      qemu_disk_rotation_rate:
+        description: QEMU rotation rate hint for the job-local macOS disk
+        required: true
+        default: "0"
+        type: choice
+        options:
+          - "0"
+          - "1"
 
 permissions:
   contents: write
@@ -80,7 +88,7 @@ jobs:
       DISTILL_GUEST_SSH_TARGET: distill@127.0.0.1
       DISTILL_GUEST_SSH_PORT: "2222"
       DISTILL_QEMU_ARGS_JSON: ${{ secrets.DISTILL_QEMU_ARGS_JSON }}
-      DISTILL_QEMU_DISK_ROTATION_RATE: "1"
+      DISTILL_QEMU_DISK_ROTATION_RATE: ${{ inputs.qemu_disk_rotation_rate }}
       DISTILL_QEMU_DISK_CACHE: ${{ inputs.qemu_disk_cache }}
       GH_TOKEN: ${{ github.token }}
       HOMEBREW_NO_AUTO_UPDATE: "1"
@@ -165,6 +173,13 @@ jobs:
             writeback|unsafe) ;;
             *)
               echo "Legacy QEMU disk cache must be writeback or unsafe" >&2
+              exit 1
+              ;;
+          esac
+          case "$DISTILL_QEMU_DISK_ROTATION_RATE" in
+            0|1) ;;
+            *)
+              echo "Legacy QEMU disk rotation rate must be 0 or 1" >&2
               exit 1
               ;;
           esac

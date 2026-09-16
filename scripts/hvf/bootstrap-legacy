@@ -38,7 +38,7 @@ qemu_vars_sha=${DISTILL_QEMU_VARS_SHA256:-}
 qemu_bin=${QEMU_SYSTEM_X86_64:-qemu-system-x86_64}
 qemu_img=${QEMU_IMG:-qemu-img}
 plutil_cmd=${DISTILL_PLUTIL:-plutil}
-disk_rotation_rate=${DISTILL_QEMU_DISK_ROTATION_RATE:-1}
+disk_rotation_rate=${DISTILL_QEMU_DISK_ROTATION_RATE:-0}
 disk_cache=${DISTILL_QEMU_DISK_CACHE:-writeback}
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-legacy-bootstrap.XXXXXX")
 qemu_pid=
@@ -418,10 +418,33 @@ set +e
   --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg \\
   > /Volumes/InstallMedia/startosinstall.log 2>&1 &
 startosinstall_pid=\$!
+process_tree() {
+  ps -axo pid=,ppid=,stat=,etime=,%cpu=,%mem=,command= 2>&1 | awk -v root="\$startosinstall_pid" '
+    NF >= 2 {
+      pid[\$1]=\$1
+      parent[\$1]=\$2
+      line[\$1]=\$0
+    }
+    END {
+      for (candidate in pid) {
+        ancestor=candidate
+        while (ancestor != "" && ancestor != "0") {
+          if (ancestor == root) {
+            print line[candidate]
+            break
+          }
+          ancestor=parent[ancestor]
+        }
+      }
+    }
+  ' || true
+}
 while kill -0 "\$startosinstall_pid" 2>/dev/null; do
   {
     printf '%s\\n' "PROCESS \$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    ps -p "\$startosinstall_pid" -o pid=,ppid=,stat=,%cpu=,%mem=,command= 2>&1 || true
+    ps -p "\$startosinstall_pid" -o pid=,ppid=,stat=,etime=,%cpu=,%mem=,command= 2>&1 || true
+    printf '%s\\n' 'PROCESS_TREE'
+    process_tree
     df -h "\$target_volume" /Volumes/InstallMedia 2>&1 || true
     diskutil info "\$target_volume" 2>&1 || true
   } >> /Volumes/InstallMedia/startosinstall-watch.log 2>&1
