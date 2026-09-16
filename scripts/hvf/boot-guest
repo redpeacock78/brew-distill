@@ -43,6 +43,10 @@ if config_path
   end
 end
 fail_with "QEMU config must be an object" unless config.is_a?(Hash)
+disk_cache = ENV.fetch("DISTILL_QEMU_DISK_CACHE", config.fetch("disk_cache", "writeback"))
+unless %w[writeback unsafe].include?(disk_cache)
+  fail_with "DISTILL_QEMU_DISK_CACHE must be writeback or unsafe"
+end
 args = config["qemu_args"] || begin
   raw = ENV["DISTILL_QEMU_ARGS_JSON"]
   raw ? JSON.parse(raw) : nil
@@ -78,7 +82,7 @@ if opencore_disk && !args.any? { |arg| arg.include?(opencore_disk) }
   ]
 end
 args += ["-serial", "file:#{serial_log}"] unless args.any? { |arg| arg == "-serial" || arg.start_with?("-serial=") }
-args += ["-drive", "file=#{disk},format=qcow2"] unless args.any? { |arg| arg.include?(disk) }
+args += ["-drive", "file=#{disk},format=qcow2,cache=#{disk_cache}"] unless args.any? { |arg| arg.include?(disk) }
 
 unless args.each_cons(2).any? { |left, right| left == "-accel" && right == "hvf" } ||
        args.any? { |arg| arg == "-accel=hvf" }

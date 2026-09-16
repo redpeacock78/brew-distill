@@ -39,6 +39,7 @@ qemu_bin=${QEMU_SYSTEM_X86_64:-qemu-system-x86_64}
 qemu_img=${QEMU_IMG:-qemu-img}
 plutil_cmd=${DISTILL_PLUTIL:-plutil}
 disk_rotation_rate=${DISTILL_QEMU_DISK_ROTATION_RATE:-1}
+disk_cache=${DISTILL_QEMU_DISK_CACHE:-writeback}
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-legacy-bootstrap.XXXXXX")
 qemu_pid=
 install_media=
@@ -61,6 +62,13 @@ esac
 case "$disk_rotation_rate" in
   ''|*[!0-9]*)
     printf '%s\n' "bootstrap-legacy: DISTILL_QEMU_DISK_ROTATION_RATE must be a non-negative integer" >&2
+    exit 2
+    ;;
+esac
+case "$disk_cache" in
+  writeback|unsafe) ;;
+  *)
+    printf '%s\n' "bootstrap-legacy: DISTILL_QEMU_DISK_CACHE must be writeback or unsafe" >&2
     exit 2
     ;;
 esac
@@ -101,6 +109,14 @@ for path in "$installer" "$base" "$opencore_dir"; do
     exit 1
   }
 done
+test -d "$installer" || {
+  printf '%s\n' "bootstrap-legacy: installer app is not a directory: $installer" >&2
+  exit 1
+}
+test -x "$installer/Contents/Resources/startosinstall" || {
+  printf '%s\n' "bootstrap-legacy: installer has no executable startosinstall" >&2
+  exit 1
+}
 test -f "$public_key" || {
   printf '%s\n' "bootstrap-legacy: guest SSH public key is unavailable: $public_key" >&2
   exit 1
@@ -146,6 +162,18 @@ test -n "$expected_ssh_fingerprint" || {
   printf '%s\n' "bootstrap-legacy: guest SSH public key is invalid" >&2
   exit 2
 }
+if [ -n "$ssh_identity" ]; then
+  derived_public_key="$work_dir/derived-guest-key.pub"
+  ssh-keygen -y -P '' -f "$ssh_identity" > "$derived_public_key" || {
+    printf '%s\n' "bootstrap-legacy: SSH identity cannot derive a public key" >&2
+    exit 2
+  }
+  derived_ssh_fingerprint=$(ssh-keygen -lf "$derived_public_key" 2>/dev/null | awk 'NR == 1 {print $2}')
+  test "$derived_ssh_fingerprint" = "$expected_ssh_fingerprint" || {
+    printf '%s\n' "bootstrap-legacy: SSH identity and public key do not match" >&2
+    exit 2
+  }
+fi
 mkdir -p "$output_dir"
 jq -n \
   --arg user "$guest_user" \
@@ -208,6 +236,14 @@ test -f "$opencore_dir/EFI/BOOT/BOOTx64.efi" || {
 }
 test -f "$opencore_dir/EFI/OC/OpenCore.efi" || {
   printf '%s\n' "bootstrap-legacy: OpenCore.efi is missing" >&2
+  exit 1
+}
+test -f "$opencore_dir/EFI/OC/config.plist" || {
+  printf '%s\n' "bootstrap-legacy: OpenCore config.plist is missing" >&2
+  exit 1
+}
+"$plutil_cmd" -lint "$opencore_dir/EFI/OC/config.plist" >/dev/null || {
+  printf '%s\n' "bootstrap-legacy: OpenCore config.plist is invalid" >&2
   exit 1
 }
 test -f "${DISTILL_OPENCORE_DISK:-}" || {
@@ -548,7 +584,8 @@ printf '%s' "$runtime_args_json" | jq -e \
   exit 2
 }
 jq -n --argjson qemu_args "$runtime_args_json" \
-  '{schema:1,qemu_args:$qemu_args,vm_image:false}' > "$output_dir/.qemu-runtime.json"
+  --arg disk_cache "$disk_cache" \
+  '{schema:1,qemu_args:$qemu_args,disk_cache:$disk_cache,vm_image:false}' > "$output_dir/.qemu-runtime.json"
 record_timing install_media_prepare "$install_media_started"
 
 args_json=$(
@@ -562,6 +599,7 @@ args_json=$(
     --arg code "$qemu_code" \
     --arg vars "$qemu_vars" \
     --arg rotation_rate "$disk_rotation_rate" \
+    --arg disk_cache "$disk_cache" \
     'map(
        gsub("\\{\\{DISK\\}\\}"; $disk) |
        gsub("\\{\\{OPENCORE\\}\\}"; $opencore) |
@@ -585,7 +623,7 @@ args_json=$(
          "-device", "ide-hd,id=InstallMediaDevice,bus=sata.4,drive=InstallMedia"
        ] end
      | if any(.[]; contains($disk)) then . else . + [
-         "-drive", ("id=MacHDD,if=none,format=qcow2,file=" + $disk),
+         "-drive", ("id=MacHDD,if=none,format=qcow2,cache=" + $disk_cache + ",file=" + $disk),
          "-device", ("ide-hd,id=MacHDDDevice,bus=sata.5,drive=MacHDD,rotation_rate=" + $rotation_rate)
        ] end
      | if any(.[]; . == "-monitor" or startswith("-monitor=")) then . else . + [
@@ -595,6 +633,26 @@ args_json=$(
          "-qmp", ("unix:" + $qmp_monitor + ",server=on,wait=off")
        ] end'
 )
+
+qemu_version=$($qemu_bin --version 2>/dev/null | sed -n '1p' || true)
+sanitized_qemu_args=$(printf '%s' "$args_json" | jq '
+  map(
+    gsub("osk=[^,]+"; "osk=<redacted>") |
+    gsub("password=[^,]+"; "password=<redacted>") |
+    gsub("file=[^,]+"; "file=<redacted>") |
+    gsub("ourhardworkbythesewordsguardedpleasedontsteal\\(c\\)AppleComputerInc"; "<redacted>")
+  )
+')
+qemu_args_sha256=$(printf '%s' "$sanitized_qemu_args" | shasum -a 256 | awk '{print $1}')
+jq -n \
+  --arg qemu "$qemu_bin" \
+  --arg qemu_version "$qemu_version" \
+  --arg args_sha256 "$qemu_args_sha256" \
+  --arg disk_cache "$disk_cache" \
+  --arg rotation_rate "$disk_rotation_rate" \
+  --argjson args "$sanitized_qemu_args" \
+  '{schema:1,qemu:$qemu,qemu_version:$qemu_version,args_sha256:$args_sha256,args:$args,disk:{cache:$disk_cache,rotation_rate:($rotation_rate|tonumber)},vm_image:false}' \
+  > "$output_dir/qemu-launch.json"
 
 guest_boot_started=$(date +%s)
 DISTILL_QEMU_ARGS_JSON="$args_json" \

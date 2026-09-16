@@ -28,6 +28,14 @@ on:
         required: true
         default: "1800"
         type: string
+      qemu_disk_cache:
+        description: QEMU cache mode for the job-local macOS disk
+        required: true
+        default: writeback
+        type: choice
+        options:
+          - writeback
+          - unsafe
 
 permissions:
   contents: write
@@ -73,6 +81,7 @@ jobs:
       DISTILL_GUEST_SSH_PORT: "2222"
       DISTILL_QEMU_ARGS_JSON: ${{ secrets.DISTILL_QEMU_ARGS_JSON }}
       DISTILL_QEMU_DISK_ROTATION_RATE: "1"
+      DISTILL_QEMU_DISK_CACHE: ${{ inputs.qemu_disk_cache }}
       GH_TOKEN: ${{ github.token }}
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_ARTIFACT_DOMAIN: ${{ vars.DISTILL_ARTIFACT_DOMAIN }}
@@ -152,6 +161,13 @@ jobs:
             echo "Legacy install reboot timeout must be at least 60 seconds" >&2
             exit 1
           }
+          case "$DISTILL_QEMU_DISK_CACHE" in
+            writeback|unsafe) ;;
+            *)
+              echo "Legacy QEMU disk cache must be writeback or unsafe" >&2
+              exit 1
+              ;;
+          esac
           test -n "$HOMEBREW_ARTIFACT_DOMAIN" || {
             echo "Legacy requires the DISTILL_ARTIFACT_DOMAIN repository variable" >&2
             exit 1
@@ -337,7 +353,8 @@ jobs:
             --slurpfile batch out/artifacts/batch-results.json \
             --slurpfile timings out/artifacts/timings.json \
             --slurpfile phase_timings out/hvf/phase-timings.json \
-            '{schema:1,run:$run,commit:$sha,platform:{macos:$macos,arch:"x86_64"},verification:{fresh_overlay:true,status:"passed",records:$records},batch:$batch[0],timings:$timings[0],phase_timings:$phase_timings[0]}' \
+            --slurpfile qemu_launch out/hvf/qemu-launch.json \
+            '{schema:1,run:$run,commit:$sha,platform:{macos:$macos,arch:"x86_64"},verification:{fresh_overlay:true,status:"passed",records:$records},batch:$batch[0],timings:$timings[0],phase_timings:$phase_timings[0],qemu_launch:$qemu_launch[0]}' \
             > legacy-verification.json
           upload_started=$(date +%s)
           gh release upload "$DISTILL_RELEASE_TAG" \
@@ -399,6 +416,7 @@ jobs:
             out/hvf/brew-doctor.txt
             out/hvf/guest-console.log
             out/hvf/qemu.log
+            out/hvf/qemu-launch.json
             out/hvf/opencore.log
             out/hvf/opencore/
             !out/**/*.qcow2

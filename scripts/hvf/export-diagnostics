@@ -21,7 +21,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 find "$output_dir" -type f \( \
   -name 'host-info.json' -o -name 'disk-*.txt' -o -name 'disk-*.json' \
-  -o -name 'qemu.log' -o -name 'opencore.log' -o -name 'guest-console.log' \
+  -o -name 'qemu.log' -o -name 'qemu-launch.json' -o -name 'opencore.log' -o -name 'guest-console.log' \
   -o -name 'guest-info.*' -o -name 'guest-*.json' -o -name '*.guest-*.json' \
   -o -name 'startosinstall-usage.txt' \
   -o -name 'startosinstall-command.txt' -o -name 'startosinstall-package-info.txt' \

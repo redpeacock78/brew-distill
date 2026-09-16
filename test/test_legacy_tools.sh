@@ -66,6 +66,11 @@ grep -F -- 'target-volume-info.txt' "$install_script" >/dev/null
 grep -F -- 'startosinstall-environment.txt' "$install_script" >/dev/null
 grep -F -- 'startosinstall-watch.log' "$install_script" >/dev/null
 grep -F -- 'rotation_rate=' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'DISTILL_QEMU_DISK_CACHE' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'qemu-launch.json' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'osk=<redacted>' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'SSH identity and public key do not match' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'OpenCore config.plist is invalid' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- "install_media_size=\${DISTILL_INSTALL_MEDIA_SIZE:-20g}" "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- "hdiutil create -size \"\$install_media_size\"" "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 disk_list="$test_dir/diskutil-list.txt"
@@ -161,10 +166,19 @@ grep -F -- '-accel hvf' "$test_dir/qemu.log" >/dev/null
 grep -F -- "$test_dir/boot-overlay.qcow2" "$test_dir/qemu.log" >/dev/null
 printf '%s\n' opencore > "$test_dir/opencore.img"
 DISTILL_ALLOW_NON_DARWIN=1 DISTILL_OPENCORE_DISK="$test_dir/opencore.img" \
+  DISTILL_QEMU_DISK_CACHE=unsafe \
   QEMU_SYSTEM_X86_64="$test_dir/fake-qemu" QEMU_LOG="$test_dir/qemu.log" \
   "$repo_dir/scripts/hvf/boot-guest" "$test_dir/boot-overlay.qcow2" "$test_dir/out" >/dev/null
 grep -F -- "$test_dir/opencore.img" "$test_dir/qemu.log" >/dev/null
 grep -F -- 'OpenCoreBoot' "$test_dir/qemu.log" >/dev/null
+grep -F -- "cache=unsafe" "$test_dir/qemu.log" >/dev/null
+if DISTILL_ALLOW_NON_DARWIN=1 DISTILL_QEMU_DISK_CACHE=invalid \
+  QEMU_SYSTEM_X86_64="$test_dir/fake-qemu" QEMU_LOG="$test_dir/qemu.log" \
+  "$repo_dir/scripts/hvf/boot-guest" "$test_dir/boot-overlay.qcow2" "$test_dir/out" \
+  >/dev/null 2>&1; then
+  printf '%s\n' 'boot-guest accepted an invalid disk cache mode' >&2
+  exit 1
+fi
 if grep -F -- 'readonly=on' "$test_dir/qemu.log" >/dev/null; then
   printf '%s\n' 'boot-guest attached OpenCore as read-only' >&2
   exit 1
@@ -222,8 +236,13 @@ jq -e '.phases.formula_build >= 0 and .phases.bottle_verify >= 0' \
 jq -e '.phases.recovery_image_download == 0' "$test_dir/out/phase-timings.json" >/dev/null
 
 printf '%s\n' host > "$test_dir/out/host-info.json"
+printf '%s\n' '{}' > "$test_dir/out/qemu-launch.json"
 "$repo_dir/scripts/hvf/export-diagnostics" "$test_dir/out" "$test_dir/diagnostics.tar.gz" >/dev/null
 test -s "$test_dir/diagnostics.tar.gz"
+tar -tzf "$test_dir/diagnostics.tar.gz" | awk -F/ '$NF == "qemu-launch.json" {found=1} END {exit !found}' || {
+  printf '%s\n' 'export-diagnostics omitted qemu-launch.json' >&2
+  exit 1
+}
 jq -e '.files > 0' "$test_dir/out/diagnostics.json" >/dev/null
 
 jq -n '{stable_runs:3,license_review:true,timing_acceptable:true,fresh_overlay:true,provenance:true,runtime_smoke:true,brew_test:true,brew_linkage:true}' \
