@@ -410,6 +410,7 @@ test -s "$recovery" || {
 }
 
 monitor="$work_dir/qemu-monitor.sock"
+qmp_monitor="$work_dir/qemu-qmp.sock"
 qemu_code=
 qemu_vars=
 firmware_started=$(date +%s)
@@ -498,6 +499,7 @@ runtime_args_json=$(
        contains("{{RECOVERY}}") or
        contains("{{INSTALL_MEDIA}}") or
        contains("{{QEMU_MONITOR}}") or
+       contains("{{QMP_MONITOR}}") or
        contains("RecoveryImage") or
        contains("RecoveryDevice") or
        contains("InstallMedia") or
@@ -531,6 +533,7 @@ args_json=$(
     --arg recovery "$recovery" \
     --arg media "$install_media" \
     --arg monitor "$monitor" \
+    --arg qmp_monitor "$qmp_monitor" \
     --arg code "$qemu_code" \
     --arg vars "$qemu_vars" \
     'map(
@@ -539,6 +542,7 @@ args_json=$(
        gsub("\\{\\{RECOVERY\\}\\}"; $recovery) |
        gsub("\\{\\{INSTALL_MEDIA\\}\\}"; $media) |
        gsub("\\{\\{QEMU_MONITOR\\}\\}"; $monitor) |
+       gsub("\\{\\{QMP_MONITOR\\}\\}"; $qmp_monitor) |
        gsub("\\{\\{QEMU_CODE\\}\\}"; $code) |
        gsub("\\{\\{QEMU_VARS\\}\\}"; $vars)
      ) as $args
@@ -560,6 +564,9 @@ args_json=$(
        ] end
      | if any(.[]; . == "-monitor" or startswith("-monitor=")) then . else . + [
          "-monitor", ("unix:" + $monitor + ",server=on,wait=off")
+       ] end
+     | if any(.[]; . == "-qmp" or startswith("-qmp=")) then . else . + [
+         "-qmp", ("unix:" + $qmp_monitor + ",server=on,wait=off")
        ] end'
 )
 
@@ -574,7 +581,8 @@ set +e
 DISTILL_UNATTENDED_CAPTURE_DIR="$output_dir" \
 DISTILL_UNATTENDED_FRAME_LOG="$output_dir/unattended-frames.jsonl" \
   "$unattended" --monitor "$monitor" --disk-gib "$disk_gib" \
-  --command-file "$command_file" --output "$output_dir/unattended-install.json" \
+  --qmp-monitor "$qmp_monitor" --command-file "$command_file" \
+  --output "$output_dir/unattended-install.json" \
   --frame "$work_dir/frame.ppm" \
   > "$output_dir/unattended-install.log" 2>&1
 unattended_status=$?

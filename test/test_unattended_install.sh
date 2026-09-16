@@ -10,6 +10,10 @@ cleanup() {
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
   fi
+  if [ -n "${qmp_server_pid:-}" ] && kill -0 "$qmp_server_pid" 2>/dev/null; then
+    kill "$qmp_server_pid" 2>/dev/null || true
+    wait "$qmp_server_pid" 2>/dev/null || true
+  fi
   rm -rf "$test_dir"
 }
 trap cleanup EXIT HUP INT TERM
@@ -19,6 +23,8 @@ commands="$test_dir/commands.log"
 frame="$test_dir/frame.ppm"
 command_file="$test_dir/install-command.txt"
 output="$test_dir/unattended.json"
+qmp_monitor="$test_dir/qmp.sock"
+qmp_trigger="$test_dir/qmp-reset"
 cat > "$command_file" <<'EOF'
 /Volumes/InstallMedia/brew-distill-install
 EOF
@@ -30,6 +36,7 @@ cat > "$test_dir/fake-monitor.rb" <<'RUBY'
 require "socket"
 
 socket_path, command_log = ARGV
+qmp_trigger = ENV["QMP_RESET_TRIGGER"]
 File.unlink(socket_path) if File.exist?(socket_path)
 server = UNIXServer.new(socket_path)
 paused = false
@@ -98,6 +105,7 @@ File.open(command_log, "w") do |log|
     command = client.gets.to_s.chomp
     log.puts(command)
     log.flush
+    File.write(qmp_trigger, "") if qmp_trigger && command == "sendkey ret" && screendumps >= 10
     response = case command
                when /\Ascreendump (.+)\z/
                  screendumps += 1
@@ -134,8 +142,40 @@ end
 RUBY
 chmod 755 "$test_dir/fake-monitor.rb"
 
-ruby "$test_dir/fake-monitor.rb" "$monitor" "$commands" &
+cat > "$test_dir/fake-qmp.rb" <<'RUBY'
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "socket"
+
+socket_path, trigger = ARGV
+File.unlink(socket_path) if File.exist?(socket_path)
+server = UNIXServer.new(socket_path)
+client = server.accept
+client.write(JSON.generate("QMP" => {"version" => {}, "capabilities" => []}) + "\n")
+sender = Thread.new do
+  sleep 0.01 until File.file?(trigger)
+  client.write(JSON.generate("event" => "RESET", "data" => {"guest" => true}) + "\n")
+rescue IOError, SystemCallError
+  nil
+end
+while (line = client.gets)
+  message = JSON.parse(line)
+  next unless message["execute"] == "qmp_capabilities"
+
+  client.write(JSON.generate("return" => {}, "id" => message["id"]) + "\n")
+end
+sender.kill
+client.close
+server.close
+RUBY
+chmod 755 "$test_dir/fake-qmp.rb"
+
+QMP_RESET_TRIGGER="$qmp_trigger" ruby "$test_dir/fake-monitor.rb" "$monitor" "$commands" &
 server_pid=$!
+ruby "$test_dir/fake-qmp.rb" "$qmp_monitor" "$qmp_trigger" &
+qmp_server_pid=$!
 
 if ! DISTILL_UNATTENDED_FRAME_WAIT=0 \
   DISTILL_UNATTENDED_PICKER_SETTLE=0 \
@@ -157,6 +197,7 @@ if ! DISTILL_UNATTENDED_FRAME_WAIT=0 \
   DISTILL_UNATTENDED_TYPE_DELAY=0 \
   ruby "$repo_dir/scripts/hvf/unattended-install" \
     --monitor "$monitor" --disk-gib 64 --command-file "$command_file" \
+    --qmp-monitor "$qmp_monitor" \
     --output "$output" --frame "$frame" > "$test_dir/driver.log" 2>&1; then
   cat "$test_dir/driver.log" >&2
   cat "$commands" >&2
@@ -170,6 +211,7 @@ test -s "$test_dir/screen-terminal-navigation-1.ppm"
 test -s "$test_dir/screen-terminal-ready.ppm"
 test -s "$test_dir/screen-after-typing.ppm"
 test -s "$test_dir/screen-first-reboot.ppm"
+test -s "$test_dir/qmp-events.jsonl"
 awk 'NR == 2 { print }' "$test_dir/screen-recovery.ppm" | grep -Fx '32 18'
 test -s "$test_dir/screen-recovery-ready.ppm"
 test -s "$test_dir/unattended-frames.jsonl"
@@ -177,6 +219,7 @@ jq -s -e 'all(.[]; .uefi_shell_like == false)' "$test_dir/unattended-frames.json
 jq -s -e 'any(.[]; .recovery_ui_like == true)' "$test_dir/unattended-frames.jsonl" >/dev/null
 jq -s -e 'any(.[]; .recovery_ready_like == true)' "$test_dir/unattended-frames.jsonl" >/dev/null
 jq -s -e 'any(.[]; .terminal_like == true)' "$test_dir/unattended-frames.jsonl" >/dev/null
+jq -s -e 'any(.[]; .event == "RESET")' "$test_dir/qmp-events.jsonl" >/dev/null
 grep -Fqx -- 'sendkey ctrl-f2' "$commands"
 grep -Fqx -- 'sendkey spc' "$commands"
 grep -Fqx -- 'sendkey backspace' "$commands"
@@ -188,6 +231,9 @@ grep -Fqx -- 'sendkey ret' "$commands"
 kill "$server_pid" 2>/dev/null || true
 wait "$server_pid" 2>/dev/null || true
 unset server_pid
+kill "$qmp_server_pid" 2>/dev/null || true
+wait "$qmp_server_pid" 2>/dev/null || true
+unset qmp_server_pid
 shell_monitor="$test_dir/shell-monitor.sock"
 shell_commands="$test_dir/shell-commands.log"
 shell_output="$test_dir/shell-unattended.json"

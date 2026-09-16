@@ -242,8 +242,98 @@ class Hmp
   end
 end
 
+class Qmp
+  def initialize(path:, timeout:, log:)
+    @path = path
+    @timeout = timeout
+    @log = log
+    @events = []
+    @mutex = Mutex.new
+    @closed = false
+    FileUtils.rm_f(@log)
+    @thread = Thread.new { listen }
+  end
+
+  def event_count
+    @mutex.synchronize { @events.length }
+  end
+
+  def reset_since?(baseline)
+    @mutex.synchronize do
+      @events.drop(baseline || 0).any? { |event| event["event"] == "RESET" }
+    end
+  end
+
+  def close
+    @closed = true
+    @socket&.close
+    @thread.join(1)
+  end
+
+  private
+
+  def listen
+    socket = connect
+    unless socket
+      log_error("QMP socket unavailable: #{@path}")
+      return
+    end
+    @socket = socket
+    read_message(socket)
+    socket.write(JSON.generate("execute" => "qmp_capabilities", "id" => 1) + "\n")
+    loop do
+      message = read_message(socket)
+      break unless message
+
+      record_event(message) if message["event"]
+    end
+  rescue IOError, SystemCallError, JSON::ParserError => error
+    log_error(error.message) unless @closed
+  ensure
+    socket&.close
+  end
+
+  def connect
+    deadline = monotonic + @timeout
+    loop do
+      return nil if @closed
+
+      begin
+        return UNIXSocket.new(@path)
+      rescue Errno::ENOENT, Errno::ECONNREFUSED
+        return nil if monotonic >= deadline
+        sleep 0.2
+      end
+    end
+  end
+
+  def read_message(socket)
+    line = socket.gets
+    line && JSON.parse(line)
+  end
+
+  def record_event(message)
+    @mutex.synchronize { @events << message }
+    log_message(message.merge("observed_at" => Time.now.utc.iso8601(3)))
+  end
+
+  def log_error(message)
+    log_message(
+      "event" => "QMP_LISTENER_ERROR",
+      "error" => message,
+      "observed_at" => Time.now.utc.iso8601(3)
+    )
+  end
+
+  def log_message(message)
+    File.open(@log, "a") { |stream| stream.puts(JSON.generate(message)) }
+  rescue SystemCallError
+    nil
+  end
+end
+
 class Driver
-  def initialize(monitor:, disk_gib:, command:, output:, frame_path:)
+  def initialize(monitor:, qmp_monitor:, disk_gib:, command:, output:, frame_path:)
     @monitor = Hmp.new(
       monitor,
       timeout: env_number("DISTILL_UNATTENDED_MONITOR_TIMEOUT", 30),
@@ -258,6 +348,13 @@ class Driver
     @frame_log = ENV.fetch("DISTILL_UNATTENDED_FRAME_LOG", File.join(@capture_dir, "unattended-frames.jsonl"))
     FileUtils.mkdir_p(@capture_dir)
     FileUtils.rm_f(@frame_log)
+    @qmp = if qmp_monitor
+             Qmp.new(
+               path: qmp_monitor,
+               timeout: env_number("DISTILL_UNATTENDED_QMP_TIMEOUT", 30),
+               log: File.join(@capture_dir, "qmp-events.jsonl")
+             )
+           end
     @picker_timeout = env_number("DISTILL_UNATTENDED_PICKER_TIMEOUT", 600)
     @recovery_timeout = env_number("DISTILL_UNATTENDED_RECOVERY_TIMEOUT", 900)
     @recovery_min_settle = env_number(
@@ -292,6 +389,7 @@ class Driver
     @started = nil
     @command_entered_at = nil
     @last_frame = nil
+    @qmp_baseline = nil
   end
 
 def run
@@ -360,6 +458,7 @@ def run
     sleep @type_settle
     capture_and_save("screen-after-typing.ppm")
     sleep 1
+    @qmp_baseline = @qmp&.event_count
     send_key "ret"
     @command_entered_at = monotonic
     event "startosinstall command submitted; waiting for first reboot"
@@ -452,6 +551,8 @@ def run
       error: error.message
     )
     raise
+  ensure
+    @qmp&.close
   end
 end
 
@@ -520,7 +621,8 @@ end
       recovery_ui_like: frame.recovery_ui_like?,
       recovery_ready_like: frame.recovery_ready_like?,
       terminal_like: frame.terminal_like?,
-      uefi_shell_like: frame.uefi_shell_like?
+      uefi_shell_like: frame.uefi_shell_like?,
+      qmp_event_count: @qmp&.event_count
     }
     File.open(@frame_log, "a") { |stream| stream.puts(JSON.generate(record)) }
   end
@@ -549,6 +651,11 @@ end
       while @frame_interval.positive? && elapsed >= next_periodic
         save_current_frame("screen-first-reboot-#{next_periodic.to_i}s.ppm")
         next_periodic += @frame_interval
+      end
+      if @qmp&.reset_since?(@qmp_baseline)
+        event "QMP RESET event observed; first reboot reached"
+        save_current_frame("screen-first-reboot.ppm")
+        return frame
       end
       if elapsed >= @install_reboot_grace && picker_like?(frame)
         save_current_frame("screen-first-reboot.ppm")
@@ -645,8 +752,9 @@ options = {
   frame: File.join(Dir.tmpdir, "brew-distill-unattended.ppm")
 }
 parser = OptionParser.new do |opts|
-  opts.banner = "usage: unattended-install --monitor SOCKET --disk-gib GIB --command-file FILE [--output FILE] [--frame FILE]"
+  opts.banner = "usage: unattended-install --monitor SOCKET [--qmp-monitor SOCKET] --disk-gib GIB --command-file FILE [--output FILE] [--frame FILE]"
   opts.on("--monitor SOCKET") { |value| options[:monitor] = value }
+  opts.on("--qmp-monitor SOCKET") { |value| options[:qmp_monitor] = value }
   opts.on("--disk-gib GIB", Integer) { |value| options[:disk_gib] = value }
   opts.on("--command-file FILE") { |value| options[:command_file] = value }
   opts.on("--output FILE") { |value| options[:output] = value }
@@ -663,6 +771,7 @@ begin
   raise UnattendedError, "install command is empty" if command.empty?
   Driver.new(
     monitor: options[:monitor],
+    qmp_monitor: options[:qmp_monitor],
     disk_gib: options[:disk_gib],
     command: command,
     output: options[:output],
