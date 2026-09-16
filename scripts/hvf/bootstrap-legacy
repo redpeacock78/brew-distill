@@ -443,30 +443,27 @@ cat /Volumes/InstallMedia/target-volume-info.txt
 } > /Volumes/InstallMedia/startosinstall-environment.txt
 printf '%s\\n' "STARTOSINSTALL_BEGIN \$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 install_events=/Volumes/InstallMedia/startosinstall-events.log
+install_pid_file=/Volumes/InstallMedia/startosinstall.pid
 printf '%s\\n' "STARTOSINSTALL_BEGIN \$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "\$install_events"
 prepare_signal_handler() {
   printf '%s\\n' "STARTOSINSTALL_PREPARE_COMPLETE \$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$install_events"
-  if [ "$pidtosignal_enabled" = "1" ] && [ -n "\${startosinstall_pid:-}" ]; then
-    kill -USR1 "\$startosinstall_pid" 2>/dev/null || true
+  if [ "$pidtosignal_enabled" = "1" ] && [ -s "\$install_pid_file" ]; then
+    startosinstall_child=\$(cat "\$install_pid_file")
+    kill -USR1 "\$startosinstall_child" 2>/dev/null || true
   fi
 }
 trap prepare_signal_handler USR1
 set +e
 run_startosinstall() {
-  startosinstall_child=
-  forward_prepare_signal() {
-    if [ -n "\${startosinstall_child:-}" ]; then
-      kill -USR1 "\$startosinstall_child" 2>/dev/null || true
-    fi
-  }
-  trap forward_prepare_signal USR1
   /Volumes/InstallMedia/Contents/Resources/startosinstall \\
     --agreetolicense$install_target_args$nointeraction_arg$rebootdelay_arg$pidtosignal_arg \\
     --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg \\
     > /Volumes/InstallMedia/startosinstall.log 2>&1 &
   startosinstall_child=\$!
+  printf '%s\\n' "\$startosinstall_child" > "\$install_pid_file"
   wait "\$startosinstall_child"
   status=\$?
+  rm -f "\$install_pid_file"
   if [ "\$status" -ne 0 ]; then
     printf '%s\\n' "STARTOSINSTALL_FAILED \$(date -u +%Y-%m-%dT%H:%M:%SZ) status=\$status" >> "\$install_events"
     printf '%s\\n' "\$status" > /Volumes/InstallMedia/install-script.status
