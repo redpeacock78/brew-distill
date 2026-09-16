@@ -212,19 +212,43 @@ for option in agreetolicense installpackage; do
     exit 1
   }
 done
-# Ventura accepts --volume from Recovery even though startosinstall --usage omits it.
-if capability volume || [ "$major" = "13" ]; then
-  install_target_args=' --volume /Volumes/MACOS'
-elif capability eraseinstall && capability newvolumename; then
-  install_target_args=' --eraseinstall --newvolumename MACOS'
-else
-  printf '%s\n' "bootstrap-legacy: installer exposes neither --volume nor --eraseinstall/--newvolumename" >&2
-  exit 1
-fi
 nointeraction_arg=
 if capability nointeraction; then
   nointeraction_arg=' --nointeraction'
 fi
+install_target_mode=${DISTILL_LEGACY_INSTALL_TARGET_MODE:-auto}
+case "$install_target_mode" in
+  auto)
+    # Ventura accepts --volume from Recovery even though startosinstall --usage omits it.
+    if capability volume || [ "$major" = "13" ]; then
+      install_target_args=' --volume /Volumes/MACOS'
+    elif capability eraseinstall && capability newvolumename; then
+      install_target_args=' --eraseinstall --newvolumename MACOS'
+    else
+      printf '%s\n' "bootstrap-legacy: installer exposes neither --volume nor --eraseinstall/--newvolumename" >&2
+      exit 1
+    fi
+    ;;
+  volume)
+    if capability volume || [ "$major" = "13" ]; then
+      install_target_args=' --volume /Volumes/MACOS'
+    else
+      printf '%s\n' "bootstrap-legacy: requested volume target mode is unavailable" >&2
+      exit 1
+    fi
+    ;;
+  eraseinstall)
+    if ! capability eraseinstall || ! capability newvolumename; then
+      printf '%s\n' "bootstrap-legacy: requested eraseinstall target mode is unavailable" >&2
+      exit 1
+    fi
+    install_target_args=' --eraseinstall --newvolumename MACOS'
+    ;;
+  *)
+    printf '%s\n' "bootstrap-legacy: DISTILL_LEGACY_INSTALL_TARGET_MODE must be auto, volume, or eraseinstall" >&2
+    exit 2
+    ;;
+esac
 rebootdelay_arg=
 if capability rebootdelay; then
   rebootdelay_arg=' --rebootdelay 0'
