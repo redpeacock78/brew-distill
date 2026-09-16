@@ -409,8 +409,9 @@ command_diagnostic="$output_dir/startosinstall-command.txt"
   cat "$install_script"
 } > "$command_diagnostic"
 install_media="$work_dir/install-media.dmg"
+install_media_size=${DISTILL_INSTALL_MEDIA_SIZE:-20g}
 install_media_dmg_started=$(date +%s)
-hdiutil create -srcfolder "$media_root" -format UDRW -volname InstallMedia \
+hdiutil create -size "$install_media_size" -srcfolder "$media_root" -format UDRW -volname InstallMedia \
   -ov "$install_media" >/dev/null
 record_timing install_media_dmg_create "$install_media_dmg_started"
 
