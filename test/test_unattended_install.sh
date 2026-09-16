@@ -248,6 +248,7 @@ grep -Fqx -- 'sendkey shift-v' "$commands"
 grep -Fqx -- 'sendkey shift-i' "$commands"
 grep -Fqx -- 'sendkey shift-m' "$commands"
 grep -Fqx -- 'sendkey ret' "$commands"
+grep -Fqx -- 'drive_del RecoveryImage' "$commands"
 
 kill "$server_pid" 2>/dev/null || true
 wait "$server_pid" 2>/dev/null || true
