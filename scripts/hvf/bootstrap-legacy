@@ -488,7 +488,9 @@ fi
 media_root="$work_dir/install-media-root"
 mkdir -p "$media_root"
 installer_tree_started=$(date +%s)
-ditto "$installer"/. "$media_root/"
+installer_app_name=$(basename -- "$installer")
+installer_app_path="$media_root/$installer_app_name"
+ditto "$installer" "$installer_app_path"
 record_timing installer_tree_copy "$installer_tree_started"
 cp "$bootstrap_pkg" "$media_root/brew-distill-bootstrap.pkg"
 install_script="$media_root/brew-distill-install"
@@ -556,6 +558,9 @@ cat /Volumes/InstallMedia/target-volume-info.txt
 printf '%s\\n' "STARTOSINSTALL_BEGIN \$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 install_pid_file=/Volumes/InstallMedia/startosinstall.pid
 printf '%s\\n' "STARTOSINSTALL_BEGIN \$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$install_events"
+installer_app="/Volumes/InstallMedia/$installer_app_name"
+startosinstall="\$installer_app/Contents/Resources/startosinstall"
+test -x "\$startosinstall"
 prepare_signal_handler() {
   printf '%s\\n' "STARTOSINSTALL_PREPARE_COMPLETE \$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$install_events"
   if [ "$pidtosignal_enabled" = "1" ] && [ -s "\$install_pid_file" ]; then
@@ -566,7 +571,7 @@ prepare_signal_handler() {
 trap prepare_signal_handler USR1
 set +e
 run_startosinstall() {
-  /Volumes/InstallMedia/Contents/Resources/startosinstall \\
+  "\$startosinstall" \\
     --agreetolicense$install_target_args$nointeraction_arg$rebootdelay_arg$pidtosignal_arg$installpackage_arg \\
     > /Volumes/InstallMedia/startosinstall.log 2>&1 &
   startosinstall_child=\$!

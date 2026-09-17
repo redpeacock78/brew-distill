@@ -82,7 +82,9 @@ grep -F -- 'cannot apply QEMU CPU model' "$repo_dir/scripts/hvf/bootstrap-legacy
 grep -F -- 'DISTILL_QEMU_DISK_DEVICE' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'MacHDD NVMe device was not found' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'hdiutil detach -force' "$repo_dir/scripts/hvf/create-opencore-disk" >/dev/null
-grep -F -- "ditto \"\$installer\"/." "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- "installer_app_name=\$(basename -- \"\$installer\")" "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- "ditto \"\$installer\" \"\$installer_app_path\"" "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- "startosinstall=\"\\\$installer_app/Contents/Resources/startosinstall\"" "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'DISTILL_LEGACY_INSTALL_TARGET_MODE' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- '--eraseinstall --newvolumename MACOS' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'qemu-launch.json' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
