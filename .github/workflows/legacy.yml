@@ -36,6 +36,14 @@ on:
         options:
           - writeback
           - unsafe
+      qemu_disk_profile:
+        description: qcow2 layout profile for the job-local macOS disk
+        required: true
+        default: current
+        type: choice
+        options:
+          - current
+          - tuned
       qemu_disk_rotation_rate:
         description: QEMU rotation rate hint for the job-local macOS disk
         required: true
@@ -99,6 +107,7 @@ jobs:
       DISTILL_QEMU_ARGS_JSON: ${{ secrets.DISTILL_QEMU_ARGS_JSON }}
       DISTILL_QEMU_DISK_ROTATION_RATE: ${{ inputs.qemu_disk_rotation_rate }}
       DISTILL_QEMU_DISK_CACHE: ${{ inputs.qemu_disk_cache }}
+      DISTILL_QEMU_DISK_PROFILE: ${{ inputs.qemu_disk_profile }}
       DISTILL_LEGACY_INSTALL_TARGET_MODE: ${{ inputs.install_target_mode }}
       GH_TOKEN: ${{ github.token }}
       HOMEBREW_NO_AUTO_UPDATE: "1"
@@ -190,6 +199,13 @@ jobs:
             0|1) ;;
             *)
               echo "Legacy QEMU disk rotation rate must be 0 or 1" >&2
+              exit 1
+              ;;
+          esac
+          case "$DISTILL_QEMU_DISK_PROFILE" in
+            current|tuned) ;;
+            *)
+              echo "Legacy QEMU disk profile must be current or tuned" >&2
               exit 1
               ;;
           esac
@@ -317,6 +333,12 @@ jobs:
       - name: Run Legacy PoC
         run: |
           printf '%s\n' "$DISTILL_BATCH_JSON" > legacy-batch.json
+          case "$DISTILL_QEMU_DISK_PROFILE" in
+            current) ;;
+            tuned)
+              export DISTILL_BASE_QCOW2_OPTIONS='cluster_size=2M,preallocation=metadata,lazy_refcounts=on'
+              ;;
+          esac
           DISTILL_VERIFY_AFTER_BUILD=0 \
           DISTILL_LEGACY_OUTPUT_DIR=out \
             ./scripts/hvf/legacy-poc "$DISTILL_MACOS" legacy-batch.json

@@ -744,9 +744,10 @@ jq -n \
   --arg qemu_version "$qemu_version" \
   --arg args_sha256 "$qemu_args_sha256" \
   --arg disk_cache "$disk_cache" \
+  --arg disk_profile "${DISTILL_QEMU_DISK_PROFILE:-current}" \
   --arg rotation_rate "$disk_rotation_rate" \
   --argjson args "$sanitized_qemu_args" \
-  '{schema:1,qemu:$qemu,qemu_version:$qemu_version,args_sha256:$args_sha256,args:$args,disk:{cache:$disk_cache,rotation_rate:($rotation_rate|tonumber)},vm_image:false}' \
+  '{schema:1,qemu:$qemu,qemu_version:$qemu_version,args_sha256:$args_sha256,args:$args,disk:{cache:$disk_cache,profile:$disk_profile,rotation_rate:($rotation_rate|tonumber)},vm_image:false}' \
   > "$output_dir/qemu-launch.json"
 
 guest_boot_started=$(date +%s)

@@ -30,10 +30,22 @@ command -v "$qemu_img" >/dev/null 2>&1 || {
   exit 1
 }
 
-"$qemu_img" create -f qcow2 "$base" "$size"
+qcow2_options=${DISTILL_BASE_QCOW2_OPTIONS:-}
+case "$qcow2_options" in
+  '' )
+    "$qemu_img" create -f qcow2 "$base" "$size"
+    ;;
+  *[!A-Za-z0-9_=,.-]*)
+    printf '%s\n' "create-base: invalid qcow2 options: $qcow2_options" >&2
+    exit 2
+    ;;
+  *)
+    "$qemu_img" create -f qcow2 -o "$qcow2_options" "$base" "$size"
+    ;;
+esac
 if command -v jq >/dev/null 2>&1; then
-  jq -n --arg base "$base" --arg size "$size" \
-    '{schema:1,base:$base,size:$size,read_only:false,persistent:false}' \
+  jq -n --arg base "$base" --arg size "$size" --arg options "$qcow2_options" \
+    '{schema:1,base:$base,size:$size,format:"qcow2",options:(if $options == "" then null else $options end),read_only:false,persistent:false}' \
     > "$output_dir/base-create.json"
 fi
 printf '%s\n' "base created: $base ($size)"

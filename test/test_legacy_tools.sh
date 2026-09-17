@@ -168,6 +168,30 @@ QEMU_IMG="$test_dir/create-qemu-img" QEMU_IMG_LOG="$test_dir/qemu-img-create.log
 test -s "$test_dir/new-base.qcow2"
 grep -F -- 'create -f qcow2' "$test_dir/qemu-img-create.log" >/dev/null
 
+cat > "$test_dir/create-qemu-img-options" <<'EOF'
+#!/bin/sh
+set -eu
+test "$1" = create
+printf '%s\n' "$*" >> "$QEMU_IMG_LOG"
+output=
+for argument
+do
+  case "$argument" in
+    *.qcow2) output=$argument ;;
+  esac
+done
+test -n "$output"
+printf '%s\n' base > "$output"
+EOF
+chmod 755 "$test_dir/create-qemu-img-options"
+QEMU_IMG="$test_dir/create-qemu-img-options" QEMU_IMG_LOG="$test_dir/qemu-img-options.log" \
+  DISTILL_BASE_QCOW2_OPTIONS='cluster_size=2M,preallocation=metadata,lazy_refcounts=on' \
+  "$repo_dir/scripts/hvf/create-base" "$test_dir/tuned-base.qcow2" 64G "$test_dir/out" >/dev/null
+grep -F -- 'create -f qcow2 -o cluster_size=2M,preallocation=metadata,lazy_refcounts=on' \
+  "$test_dir/qemu-img-options.log" >/dev/null
+jq -e '.format == "qcow2" and .options == "cluster_size=2M,preallocation=metadata,lazy_refcounts=on"' \
+  "$test_dir/out/base-create.json" >/dev/null
+
 cp "$repo_dir/test/fake-qemu-img" "$test_dir/bin/qemu-img"
 chmod 755 "$test_dir/bin/qemu-img"
 cat > "$test_dir/qemu-img-check" <<'EOF'
