@@ -35,7 +35,7 @@ find "$output_dir" -type f \( \
   -o -name 'install-media-attach.log' -o -name 'recovery-image.json' \
   -o -name 'recovery-download.log' \
   -o -name 'unattended-frames.jsonl' -o -name 'screen-*.ppm' \
-  -o -name 'qmp-events.jsonl' \
+  -o -name 'qmp-events.jsonl' -o -name 'qemu-blockstats.jsonl' \
   -o -name 'phase-timings.json' \
   -o -name 'full-installers.txt' \
   -o -name 'installer.json' -o -name 'installer-capabilities.json' \

@@ -354,8 +354,10 @@ class Driver
     @events = []
     @capture_dir = ENV.fetch("DISTILL_UNATTENDED_CAPTURE_DIR", File.dirname(@output))
     @frame_log = ENV.fetch("DISTILL_UNATTENDED_FRAME_LOG", File.join(@capture_dir, "unattended-frames.jsonl"))
+    @blockstats_log = File.join(@capture_dir, "qemu-blockstats.jsonl")
     FileUtils.mkdir_p(@capture_dir)
     FileUtils.rm_f(@frame_log)
+    FileUtils.rm_f(@blockstats_log)
     @qmp = if qmp_monitor
              Qmp.new(
                path: qmp_monitor,
@@ -471,6 +473,7 @@ def run
     send_key "ret"
     @command_entered_at = monotonic
     event "startosinstall command submitted; waiting for first reboot"
+    record_blockstats("start")
     wait_for_first_reboot
     event "first reboot reached; detaching the recovery image"
     @monitor.command "stop"
@@ -655,6 +658,25 @@ end
     File.open(@frame_log, "a") { |stream| stream.puts(JSON.generate(record)) }
   end
 
+  def record_blockstats(label)
+    response = @monitor.command("info blockstats")
+    record = {
+      timestamp: Time.now.utc.iso8601(3),
+      elapsed_seconds: @command_entered_at && (monotonic - @command_entered_at).round(3),
+      label: label,
+      response: response
+    }
+    File.open(@blockstats_log, "a") { |stream| stream.puts(JSON.generate(record)) }
+  rescue StandardError => error
+    record = {
+      timestamp: Time.now.utc.iso8601(3),
+      elapsed_seconds: @command_entered_at && (monotonic - @command_entered_at).round(3),
+      label: label,
+      error: error.message
+    }
+    File.open(@blockstats_log, "a") { |stream| stream.puts(JSON.generate(record)) }
+  end
+
   def finite_metric(value)
     value&.finite? ? value.round(3) : nil
   end
@@ -686,6 +708,7 @@ end
       end
       while @frame_interval.positive? && elapsed >= next_periodic
         save_current_frame("screen-first-reboot-#{next_periodic.to_i}s.ppm")
+        record_blockstats("#{next_periodic.to_i}s")
         next_periodic += @frame_interval
       end
       if @qmp&.reset_since?(@qmp_baseline)

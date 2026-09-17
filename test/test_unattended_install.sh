@@ -234,6 +234,8 @@ test -s "$test_dir/screen-terminal-ready.ppm"
 test -s "$test_dir/screen-after-typing.ppm"
 test -s "$test_dir/screen-first-reboot.ppm"
 test -s "$test_dir/qmp-events.jsonl"
+test -s "$test_dir/qemu-blockstats.jsonl"
+jq -s -e 'any(.[]; .label == "start")' "$test_dir/qemu-blockstats.jsonl" >/dev/null
 awk 'NR == 2 { print }' "$test_dir/screen-recovery.ppm" | grep -Fx '32 18'
 test -s "$test_dir/screen-recovery-ready.ppm"
 test -s "$test_dir/unattended-frames.jsonl"

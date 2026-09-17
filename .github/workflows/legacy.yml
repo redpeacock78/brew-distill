@@ -492,6 +492,7 @@ jobs:
             out/hvf/recovery-download.log
             out/hvf/unattended-frames.jsonl
             out/hvf/qmp-events.jsonl
+            out/hvf/qemu-blockstats.jsonl
             out/hvf/screen-*.ppm
             out/hvf/full-installers.txt
             out/hvf/installer-package.log
