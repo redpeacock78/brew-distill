@@ -179,8 +179,11 @@ installer=
 package_sha=
 catalog_source=
 catalog_product_id=
+catalog_build=
 catalog_bundle_version=
 catalog_package_url=
+catalog_install_info_url=
+catalog_build_manifest_url=
 catalog_resolved_at=
 
 extract_cached_installer() {
@@ -218,7 +221,9 @@ catalog_metadata_valid() {
     .version == $version and
     (.product_id | type == "string" and length > 0) and
     (.bundle_version | type == "string" and length > 0) and
-    (.package_url | type == "string" and startswith("https://"))
+    (.package_url | type == "string" and startswith("https://")) and
+    (.install_info_url | type == "string" and startswith("https://")) and
+    (.build_manifest_url | type == "string" and startswith("https://"))
   ' >/dev/null
 }
 load_catalog_cache() {
@@ -227,7 +232,9 @@ load_catalog_cache() {
     select(type == "object" and .version == $version) |
     select((.product_id | type == "string" and length > 0)) |
     select((.bundle_version | type == "string" and length > 0)) |
-    select((.package_url | type == "string" and startswith("https://")))
+    select((.package_url | type == "string" and startswith("https://"))) |
+    select((.install_info_url | type == "string" and startswith("https://"))) |
+    select((.build_manifest_url | type == "string" and startswith("https://")))
   ' "$catalog_cache" 2>/dev/null) || {
     rm -f -- "$catalog_cache"
     return 1
@@ -235,8 +242,11 @@ load_catalog_cache() {
   installer_expected_bundle_version=$(printf '%s' "$catalog_record" | jq -er '.bundle_version')
   catalog_source=$(printf '%s' "$catalog_record" | jq -r '.source // "apple-catalog"')
   catalog_product_id=$(printf '%s' "$catalog_record" | jq -r '.product_id')
+  catalog_build=$(printf '%s' "$catalog_record" | jq -r '.build // empty')
   catalog_bundle_version=$(printf '%s' "$catalog_record" | jq -r '.bundle_version')
   catalog_package_url=$(printf '%s' "$catalog_record" | jq -r '.package_url')
+  catalog_install_info_url=$(printf '%s' "$catalog_record" | jq -r '.install_info_url')
+  catalog_build_manifest_url=$(printf '%s' "$catalog_record" | jq -r '.build_manifest_url')
   catalog_resolved_at=$(printf '%s' "$catalog_record" | jq -r '.resolved_at // empty')
 }
 save_catalog_cache() {
@@ -250,8 +260,11 @@ save_catalog_cache() {
   mv "$cache_tmp" "$catalog_cache"
   catalog_source=apple-catalog
   catalog_product_id=$(printf '%s' "$catalog_record" | jq -r '.product_id')
+  catalog_build=$(printf '%s' "$catalog_record" | jq -r '.build // empty')
   catalog_bundle_version=$(printf '%s' "$catalog_record" | jq -r '.bundle_version')
   catalog_package_url=$(printf '%s' "$catalog_record" | jq -r '.package_url')
+  catalog_install_info_url=$(printf '%s' "$catalog_record" | jq -r '.install_info_url')
+  catalog_build_manifest_url=$(printf '%s' "$catalog_record" | jq -r '.build_manifest_url')
   catalog_resolved_at=$resolved_at
 }
 resolve_catalog_record() {
@@ -272,6 +285,40 @@ resolve_catalog_record() {
   fi
   save_catalog_cache
   record_phase catalog_resolve "$catalog_started"
+}
+install_catalog_support_files() {
+  support_dir="$installer/Contents/SharedSupport"
+  run_privileged /bin/mkdir -p "$support_dir" || return 1
+  for metadata_name in InstallInfo.plist BuildManifest.plist; do
+    case "$metadata_name" in
+      InstallInfo.plist) metadata_url=$catalog_install_info_url ;;
+      BuildManifest.plist) metadata_url=$catalog_build_manifest_url ;;
+    esac
+    [ -n "$metadata_url" ] || return 1
+    metadata_tmp="$output_dir/.${metadata_name}.$$"
+    printf '%s\n' "downloading=$metadata_url" "installing=$support_dir/$metadata_name" >> "$installer_package_log"
+    if ! curl --fail --location --retry 3 --retry-delay 2 --progress-bar \
+      "$metadata_url" -o "$metadata_tmp" >> "$installer_package_log" 2>&1; then
+      rm -f -- "$metadata_tmp"
+      printf '%s\n' "installer metadata download failed: $metadata_name" >> "$installer_package_log"
+      return 1
+    fi
+    if ! [ -s "$metadata_tmp" ] || ! run_privileged /bin/cp "$metadata_tmp" "$support_dir/$metadata_name"; then
+      rm -f -- "$metadata_tmp"
+      printf '%s\n' "installer metadata install failed: $metadata_name" >> "$installer_package_log"
+      return 1
+    fi
+    rm -f -- "$metadata_tmp"
+    run_privileged "$plutil_cmd" -lint "$support_dir/$metadata_name" >> "$installer_package_log" 2>&1 || return 1
+  done
+  manifest_version=$(run_privileged "$plutil_cmd" -extract ProductVersion raw -o - \
+    "$support_dir/BuildManifest.plist" 2>/dev/null || true)
+  manifest_build=$(run_privileged "$plutil_cmd" -extract ProductBuildVersion raw -o - \
+    "$support_dir/BuildManifest.plist" 2>/dev/null || true)
+  printf '%s\n' "BuildManifest.ProductVersion=$manifest_version" \
+    "BuildManifest.ProductBuildVersion=$manifest_build" >> "$installer_package_log"
+  [ "$manifest_version" = "$version" ] || return 1
+  [ -z "$catalog_build" ] || [ "$manifest_build" = "$catalog_build" ]
 }
 download_catalog_package() {
   package_url=$(printf '%s' "$catalog_record" | jq -er '.package_url | select(startswith("https://"))') || return 1
@@ -335,12 +382,26 @@ download_catalog_package() {
   discovery_started=$(date +%s)
   installer=$(find_installer || true)
   record_phase installer_discovery "$discovery_started"
-  [ -n "$installer" ]
+  [ -n "$installer" ] || return 1
+  metadata_started=$(date +%s)
+  if ! install_catalog_support_files; then
+    record_phase installer_metadata "$metadata_started"
+    installer=
+    return 1
+  fi
+  record_phase installer_metadata "$metadata_started"
 }
 try_catalog() {
   catalog_record=
   installer_expected_bundle_version=
   catalog_source=
+  catalog_product_id=
+  catalog_build=
+  catalog_bundle_version=
+  catalog_package_url=
+  catalog_install_info_url=
+  catalog_build_manifest_url=
+  catalog_resolved_at=
   catalog_started=$(date +%s)
   if load_catalog_cache; then
     record_phase catalog_resolve "$catalog_started"
@@ -355,6 +416,13 @@ try_catalog() {
   catalog_record=
   catalog_source=
   installer_expected_bundle_version=
+  catalog_product_id=
+  catalog_build=
+  catalog_bundle_version=
+  catalog_package_url=
+  catalog_install_info_url=
+  catalog_build_manifest_url=
+  catalog_resolved_at=
   if resolve_catalog_record; then
     if download_catalog_package; then
       return 0
@@ -378,6 +446,14 @@ if [ -z "$installer" ] && [ "$catalog_primary" = "1" ]; then
 fi
 
 if [ -z "$installer" ] && [ "$softwareupdate_fallback" = "1" ]; then
+  catalog_source=
+  catalog_product_id=
+  catalog_build=
+  catalog_bundle_version=
+  catalog_package_url=
+  catalog_install_info_url=
+  catalog_build_manifest_url=
+  catalog_resolved_at=
   command -v "$softwareupdate_cmd" >/dev/null 2>&1 || {
     printf '%s\n' "fetch-installer: softwareupdate fallback is unavailable: $softwareupdate_cmd" >&2
     exit 1
@@ -467,11 +543,14 @@ jq -n \
   --arg installer "$installer" \
   --arg source "$catalog_source" \
   --arg product_id "$catalog_product_id" \
+  --arg catalog_build "$catalog_build" \
   --arg catalog_bundle_version "$catalog_bundle_version" \
   --arg package_url "$catalog_package_url" \
+  --arg install_info_url "$catalog_install_info_url" \
+  --arg build_manifest_url "$catalog_build_manifest_url" \
   --arg resolved_at "$catalog_resolved_at" \
   --arg package_sha256 "$package_sha" \
   '{schema:1,version:$version,bundle_version:$bundle_version,installer:$installer,
-    catalog:(if $source == "" then null else {source:$source,product_id:$product_id,bundle_version:$catalog_bundle_version,package_url:$package_url,resolved_at:$resolved_at,package_sha256:$package_sha256} end)}' \
+    catalog:(if $source == "" then null else {source:$source,product_id:$product_id,build:$catalog_build,bundle_version:$catalog_bundle_version,package_url:$package_url,install_info_url:$install_info_url,build_manifest_url:$build_manifest_url,resolved_at:$resolved_at,package_sha256:$package_sha256} end)}' \
   > "$output_dir/installer.json"
 printf '%s\n' "installer=$installer"

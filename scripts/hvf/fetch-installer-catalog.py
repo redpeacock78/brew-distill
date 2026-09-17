@@ -57,12 +57,23 @@ def distribution_value(content: bytes, key: str) -> str:
     return ""
 
 
-def package_info(product: dict) -> tuple[str, str]:
+def package_info(product: dict) -> dict[str, str]:
+    result = {
+        "package_url": "",
+        "package_metadata": "",
+        "install_info_url": "",
+        "build_manifest_url": "",
+    }
     for package in product.get("Packages", []):
         url = package.get("URL", "")
         if urlsplit(url).path.endswith("/InstallAssistant.pkg"):
-            return url, package.get("MetadataURL", "")
-    return "", ""
+            result["package_url"] = url
+            result["package_metadata"] = package.get("MetadataURL", "")
+        elif urlsplit(url).path.endswith("/InstallInfo.plist"):
+            result["install_info_url"] = url
+        elif urlsplit(url).path.endswith("/BuildManifest.plist"):
+            result["build_manifest_url"] = url
+    return result
 
 
 def package_value(content: bytes, key: str) -> str:
@@ -81,8 +92,12 @@ def resolve(version: str) -> dict:
     for product_id, product in catalog.get("Products", {}).items():
         if not product.get("ExtendedMetaInfo", {}).get("InstallAssistantPackageIdentifiers"):
             continue
-        package, package_metadata = package_info(product)
-        if not package:
+        packages = package_info(product)
+        package = packages["package_url"]
+        package_metadata = packages["package_metadata"]
+        if not all(
+            packages[key] for key in ("package_url", "install_info_url", "build_manifest_url")
+        ):
             continue
         distributions = product.get("Distributions", {})
         distribution = distributions.get("English") or distributions.get("en", "")
@@ -119,6 +134,8 @@ def resolve(version: str) -> dict:
                 "build": build,
                 "bundle_version": bundle_version,
                 "package_url": package,
+                "install_info_url": packages["install_info_url"],
+                "build_manifest_url": packages["build_manifest_url"],
             }
     raise RuntimeError(f"Apple catalog has no InstallAssistant package for {version}")
 

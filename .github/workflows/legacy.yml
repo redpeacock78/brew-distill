@@ -570,7 +570,7 @@ jobs:
           printf '%s\n' '| Phase | Time |' '| --- | ---: |' >> "$GITHUB_STEP_SUMMARY"
           timing_file=out/hvf/phase-timings.json
           for phase in \
-            catalog_resolve installer_download installer_checksum installer_pkg_install installer_discovery \
+            catalog_resolve installer_download installer_checksum installer_pkg_install installer_discovery installer_metadata \
             recovery_image_download matching_recovery_prepare install_media_prepare bootstrap_pkg_build installer_tree_copy install_media_dmg_create \
             recovery_dmg_convert firmware_prepare guest_boot guest_install guest_ssh_wait brew_bootstrap \
             formula_build bottle_create bottle_upload bottle_verify; do

@@ -42,14 +42,31 @@ if [ "${CURL_FAIL:-0}" = "1" ]; then
   exit 22
 fi
 output=
+url=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) output=$2; shift 2 ;;
-    *) shift ;;
+    --retry|--retry-delay) shift 2 ;;
+    --fail|--location|--progress-bar) shift ;;
+    *) url=$1; shift ;;
   esac
 done
 test -n "$output"
-printf '%s\n' package > "$output"
+case "$url" in
+  *InstallInfo.plist)
+    cat > "$output" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist version="1.0"><plist version="1.0"><dict/></plist>
+PLIST
+    ;;
+  *BuildManifest.plist)
+    cat > "$output" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist version="1.0"><plist version="1.0"><dict><key>ProductVersion</key><string>13.7.8</string><key>ProductBuildVersion</key><string>22H730</string></dict></plist>
+PLIST
+    ;;
+  *) printf '%s\n' package > "$output" ;;
+esac
 EOF
 cat > "$test_dir/bin/aria2c" <<'EOF'
 #!/bin/sh
@@ -87,6 +104,8 @@ print(json.dumps({
     "build": "22H730",
     "bundle_version": "18.7.62",
     "package_url": "https://example.invalid/InstallAssistant.pkg",
+    "install_info_url": "https://example.invalid/InstallInfo.plist",
+    "build_manifest_url": "https://example.invalid/BuildManifest.plist",
 }))
 EOF
 cat > "$test_dir/installer" <<'EOF'
@@ -94,7 +113,8 @@ cat > "$test_dir/installer" <<'EOF'
 set -eu
 test "${CM_BUILD:-}" = CM_BUILD
 root=$FAKE_INSTALLER_ROOT
-mkdir -p "$root/Install macOS Ventura.app/Contents/Resources"
+mkdir -p "$root/Install macOS Ventura.app/Contents/Resources" \
+  "$root/Install macOS Ventura.app/Contents/SharedSupport"
 cat > "$root/Install macOS Ventura.app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -121,12 +141,14 @@ PATH="$test_dir/bin:$PATH" \
 jq -e '.version == "13.7.8" and .bundle_version == "18.7.62" and (.installer | endswith("Install macOS Ventura.app"))' \
   "$test_dir/out/installer.json" >/dev/null
 test ! -e "$test_dir/softwareupdate.log"
-jq -e '.version == "13.7.8" and .product_id == "test-product-13-7-8" and .source == "apple-catalog" and .package_url == "https://example.invalid/InstallAssistant.pkg"' \
+jq -e '.version == "13.7.8" and .product_id == "test-product-13-7-8" and .source == "apple-catalog" and .package_url == "https://example.invalid/InstallAssistant.pkg" and .install_info_url == "https://example.invalid/InstallInfo.plist" and .build_manifest_url == "https://example.invalid/BuildManifest.plist"' \
   "$test_dir/out/installer-catalog-cache.json" >/dev/null
 grep -Fqx -- 'catalog package installed' "$test_dir/out/installer-package.log"
 grep -Fqx -- 'downloader=aria2c' "$test_dir/out/installer-package.log"
-jq -e 'all(.phases; .catalog_resolve >= 0 and .installer_download >= 0 and .installer_checksum >= 0 and .installer_pkg_install >= 0 and .installer_discovery >= 0)' \
+jq -e 'all(.phases; .catalog_resolve >= 0 and .installer_download >= 0 and .installer_checksum >= 0 and .installer_pkg_install >= 0 and .installer_discovery >= 0 and .installer_metadata >= 0)' \
   "$test_dir/out/phase-timings.json" >/dev/null
+test -s "$test_dir/Applications/Install macOS Ventura.app/Contents/SharedSupport/InstallInfo.plist"
+test -s "$test_dir/Applications/Install macOS Ventura.app/Contents/SharedSupport/BuildManifest.plist"
 
 mkdir -p "$test_dir/cache-applications" "$test_dir/cache-out"
 cp "$test_dir/out/installer-catalog-cache.json" "$test_dir/cache-catalog.json"
