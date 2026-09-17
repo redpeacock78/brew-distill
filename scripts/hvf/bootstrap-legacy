@@ -42,6 +42,7 @@ disk_rotation_rate=${DISTILL_QEMU_DISK_ROTATION_RATE:-0}
 disk_cache=${DISTILL_QEMU_DISK_CACHE:-writeback}
 disk_profile=${DISTILL_QEMU_DISK_PROFILE:-current}
 disk_format=${DISTILL_BASE_FORMAT:-qcow2}
+install_package_mode=${DISTILL_LEGACY_INSTALLPACKAGE_MODE:-required}
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-legacy-bootstrap.XXXXXX")
 qemu_pid=
 install_media=
@@ -88,6 +89,13 @@ case "$disk_format" in
   qcow2|raw) ;;
   *)
     printf '%s\n' "bootstrap-legacy: base image format must be qcow2 or raw" >&2
+    exit 2
+    ;;
+esac
+case "$install_package_mode" in
+  required|omit) ;;
+  *)
+    printf '%s\n' "bootstrap-legacy: DISTILL_LEGACY_INSTALLPACKAGE_MODE must be required or omit" >&2
     exit 2
     ;;
 esac
@@ -225,12 +233,16 @@ test -f "$capabilities" || {
 capability() {
   [ "$($plutil_cmd -extract "options.$1" raw -o - "$capabilities" 2>/dev/null)" = "true" ]
 }
-for option in agreetolicense installpackage; do
-  capability "$option" || {
-    printf '%s\n' "bootstrap-legacy: installer does not expose --$option" >&2
+capability agreetolicense || {
+  printf '%s\n' "bootstrap-legacy: installer does not expose --agreetolicense" >&2
+  exit 1
+}
+if [ "$install_package_mode" = required ]; then
+  capability installpackage || {
+    printf '%s\n' "bootstrap-legacy: installer does not expose --installpackage" >&2
     exit 1
   }
-done
+fi
 nointeraction_arg=
 if capability nointeraction; then
   nointeraction_arg=' --nointeraction'
@@ -397,7 +409,7 @@ record_timing bootstrap_pkg_build "$bootstrap_pkg_started"
 package_info="$output_dir/startosinstall-package-info.txt"
 package_expanded="$work_dir/bootstrap-product-expanded"
 {
-  printf '%s\n' "component_package=$bootstrap_component_pkg" "product_package=$bootstrap_pkg"
+  printf '%s\n' "install_package_mode=$install_package_mode" "component_package=$bootstrap_component_pkg" "product_package=$bootstrap_pkg"
   printf '%s\n' '[component payload]'
   pkgutil --payload-files "$bootstrap_component_pkg" 2>&1 || true
   printf '%s\n' '[product payload]'
@@ -409,6 +421,11 @@ package_expanded="$work_dir/bootstrap-product-expanded"
     find "$package_expanded" -maxdepth 3 -type f -print | sort
   fi
 } > "$package_info"
+
+installpackage_arg=
+if [ "$install_package_mode" = required ]; then
+  installpackage_arg=' --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg'
+fi
 
 media_root="$work_dir/install-media-root"
 mkdir -p "$media_root"
@@ -492,8 +509,7 @@ trap prepare_signal_handler USR1
 set +e
 run_startosinstall() {
   /Volumes/InstallMedia/Contents/Resources/startosinstall \\
-    --agreetolicense$install_target_args$nointeraction_arg$rebootdelay_arg$pidtosignal_arg \\
-    --installpackage /Volumes/InstallMedia/brew-distill-bootstrap.pkg \\
+    --agreetolicense$install_target_args$nointeraction_arg$rebootdelay_arg$pidtosignal_arg$installpackage_arg \\
     > /Volumes/InstallMedia/startosinstall.log 2>&1 &
   startosinstall_child=\$!
   printf '%s\\n' "\$startosinstall_child" > "\$install_pid_file"

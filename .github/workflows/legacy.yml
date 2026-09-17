@@ -28,6 +28,14 @@ on:
         required: true
         default: "1800"
         type: string
+      install_package_mode:
+        description: Bootstrap package mode for Legacy diagnosis
+        required: true
+        default: required
+        type: choice
+        options:
+          - required
+          - omit
       qemu_disk_cache:
         description: QEMU cache mode for the job-local macOS disk
         required: true
@@ -87,6 +95,7 @@ jobs:
       DISTILL_UNATTENDED_RECOVERY_STILL_POLL: "3"
       DISTILL_UNATTENDED_FRAME_INTERVAL: "60"
       DISTILL_UNATTENDED_INSTALL_REBOOT_TIMEOUT: ${{ inputs.install_reboot_timeout }}
+      DISTILL_LEGACY_INSTALLPACKAGE_MODE: ${{ inputs.install_package_mode }}
       DISTILL_BATCH_JSON: ${{ inputs.batch }}
       DISTILL_LEGACY_BOOTSTRAP: ${{ vars.DISTILL_LEGACY_BOOTSTRAP }}
       DISTILL_OPENCORE_DIR: ${{ vars.DISTILL_OPENCORE_DIR }}
@@ -207,6 +216,13 @@ jobs:
             current|tuned|raw) ;;
             *)
               echo "Legacy QEMU disk profile must be current, tuned, or raw" >&2
+              exit 1
+              ;;
+          esac
+          case "$DISTILL_LEGACY_INSTALLPACKAGE_MODE" in
+            required|omit) ;;
+            *)
+              echo "Legacy install package mode must be required or omit" >&2
               exit 1
               ;;
           esac
@@ -343,6 +359,9 @@ jobs:
               export DISTILL_BASE_FORMAT=raw
               ;;
           esac
+          if [ "$DISTILL_LEGACY_INSTALLPACKAGE_MODE" = omit ]; then
+            export DISTILL_GUEST_SSH_TIMEOUT=60
+          fi
           DISTILL_VERIFY_AFTER_BUILD=0 \
           DISTILL_LEGACY_OUTPUT_DIR=out \
             ./scripts/hvf/legacy-poc "$DISTILL_MACOS" legacy-batch.json
