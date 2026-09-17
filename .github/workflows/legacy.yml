@@ -555,7 +555,6 @@ jobs:
             out/hvf/qemu.log
             out/hvf/qemu-launch.json
             out/hvf/opencore.log
-            out/hvf/opencore/
             !out/**/*.qcow2
             !out/**/*.img
             !out/**/*.raw

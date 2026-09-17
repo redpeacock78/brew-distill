@@ -100,6 +100,9 @@ grep -F -- 'recovery-system-version.txt' "$repo_dir/scripts/hvf/bootstrap-legacy
 grep -F -- 'install_media_cache' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'network-diagnostics.txt' "$repo_dir/scripts/hvf/export-diagnostics" >/dev/null
 grep -F -- 'recovery-system-version.txt' "$repo_dir/scripts/hvf/export-diagnostics" >/dev/null
+if grep -F -- 'out/hvf/opencore/' "$repo_dir/.github/workflows/legacy.yml" >/dev/null; then
+  exit 1
+fi
 disk_list="$test_dir/diskutil-list.txt"
 cat > "$disk_list" <<'EOF'
 /dev/disk0 (internal, physical):
