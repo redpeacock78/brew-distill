@@ -458,6 +458,7 @@ jobs:
             out/hvf/installer-catalog-cache.json
             out/hvf/phase-timings.json
             out/hvf/base.json
+            out/hvf/base-create.json
             out/hvf/base-check.txt
             out/hvf/opencore-disk.json
             out/hvf/ssh-client.json
