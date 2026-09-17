@@ -705,18 +705,23 @@ if [ "${DISTILL_LEGACY_MATCHING_RECOVERY:-0}" = "1" ] && [ -f "$installer/Conten
   mkdir -p "$matching_recovery_mount"
   if hdiutil attach -readonly -nobrowse -mountpoint "$matching_recovery_mount" \
     "$installer/Contents/SharedSupport/SharedSupport.dmg" >> "$matching_recovery_log" 2>&1; then
+    matching_recovery_file=$(find "$matching_recovery_mount" -maxdepth 6 -type f -name 'BaseSystem.dmg' -print | sed -n '1p')
     matching_recovery_zip=$(find "$matching_recovery_mount" -maxdepth 3 -type f -name '*.zip' -print | sed -n '1p')
     matching_recovery_entry=
-    if [ -n "$matching_recovery_zip" ]; then
+    if [ -n "$matching_recovery_file" ] && cp "$matching_recovery_file" "$matching_recovery_source"; then
+      matching_recovery_ready=1
+      printf '%s\n' "matching Recovery copied from $matching_recovery_file" >> "$matching_recovery_log"
+    elif [ -n "$matching_recovery_zip" ]; then
       matching_recovery_entry=$(unzip -Z1 "$matching_recovery_zip" 2>> "$matching_recovery_log" | \
         awk '$0 ~ /(^|\/)AssetData\/Restore\/BaseSystem\.dmg$/ {print; exit}' || true)
+      if [ -n "$matching_recovery_entry" ] && \
+        unzip -p "$matching_recovery_zip" "$matching_recovery_entry" > "$matching_recovery_source" 2>> "$matching_recovery_log" && \
+        [ -s "$matching_recovery_source" ]; then
+        matching_recovery_ready=1
+        printf '%s\n' "matching Recovery extracted from $matching_recovery_entry" >> "$matching_recovery_log"
+      fi
     fi
-    if [ -n "$matching_recovery_entry" ] && \
-      unzip -p "$matching_recovery_zip" "$matching_recovery_entry" > "$matching_recovery_source" 2>> "$matching_recovery_log" && \
-      [ -s "$matching_recovery_source" ]; then
-      matching_recovery_ready=1
-      printf '%s\n' "matching Recovery extracted from $matching_recovery_entry" >> "$matching_recovery_log"
-    else
+    if [ "$matching_recovery_ready" != "1" ]; then
       printf '%s\n' 'matching Recovery BaseSystem.dmg was not found in SharedSupport' >> "$matching_recovery_log"
     fi
     if ! hdiutil detach "$matching_recovery_mount" >> "$matching_recovery_log" 2>&1; then
