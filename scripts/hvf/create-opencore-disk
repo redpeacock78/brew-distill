@@ -78,12 +78,8 @@ trap cleanup EXIT HUP INT TERM
 
 hdiutil create -size "${DISTILL_OPENCORE_DISK_SIZE:-384m}" \
   -fs 'MS-DOS FAT32' -layout GPTSPUD -volname OPENCORE -ov "$work_image" >/dev/null
-attach_output=$(hdiutil attach -nobrowse -noautoopen -mountpoint "$mount_dir" "$work_image")
-attached=$(printf '%s\n' "$attach_output" | awk 'NR == 1 {print $1}')
-test -n "$attached" || {
-  printf '%s\n' "create-opencore-disk: hdiutil did not report an attached device" >&2
-  exit 1
-}
+hdiutil attach -nobrowse -noautoopen -mountpoint "$mount_dir" "$work_image" >/dev/null
+attached=$mount_dir
 cp -R "$source_dir/EFI" "$mount_dir/"
 sync
 detach_image "$attached" || {
