@@ -266,6 +266,21 @@ class Qmp
     event_since?(baseline, "SHUTDOWN")
   end
 
+  def blockstats
+    socket = UNIXSocket.new(@path)
+    deadline = monotonic + @timeout
+    read_message(socket, deadline: deadline)
+    socket.write(JSON.generate("execute" => "qmp_capabilities", "id" => 1) + "\n")
+    read_response(socket, 1, deadline)
+    socket.write(JSON.generate("execute" => "query-blockstats", "id" => 2) + "\n")
+    response = read_response(socket, 2, deadline)
+    raise UnattendedError, JSON.generate(response["error"]) if response["error"]
+
+    response.fetch("return")
+  ensure
+    socket&.close
+  end
+
   def event_since?(baseline, name)
     @mutex.synchronize do
       @events.drop(baseline || 0).any? { |event| event["event"] == name }
@@ -315,9 +330,23 @@ class Qmp
     end
   end
 
-  def read_message(socket)
+  def read_message(socket, deadline: nil)
+    if deadline
+      remaining = deadline - monotonic
+      raise UnattendedError, "QMP response timed out: #{@path}" if remaining <= 0
+      raise UnattendedError, "QMP response timed out: #{@path}" unless IO.select([socket], nil, nil, remaining)
+    end
     line = socket.gets
     line && JSON.parse(line)
+  end
+
+  def read_response(socket, id, deadline)
+    loop do
+      message = read_message(socket, deadline: deadline)
+      raise UnattendedError, "QMP closed unexpectedly: #{@path}" unless message
+      next if message["event"]
+      return message if message["id"] == id
+    end
   end
 
   def record_event(message)
@@ -659,19 +688,25 @@ end
   end
 
   def record_blockstats(label)
-    response = @monitor.command("info blockstats")
     record = {
       timestamp: Time.now.utc.iso8601(3),
       elapsed_seconds: @command_entered_at && (monotonic - @command_entered_at).round(3),
-      label: label,
-      response: response
+      label: label
     }
+    if @qmp
+      record[:source] = "qmp"
+      record[:blockstats] = @qmp.blockstats
+    else
+      record[:source] = "hmp"
+      record[:response] = @monitor.command("info blockstats")
+    end
     File.open(@blockstats_log, "a") { |stream| stream.puts(JSON.generate(record)) }
   rescue StandardError => error
     record = {
       timestamp: Time.now.utc.iso8601(3),
       elapsed_seconds: @command_entered_at && (monotonic - @command_entered_at).round(3),
       label: label,
+      source: @qmp ? "qmp" : "hmp",
       error: error.message
     }
     File.open(@blockstats_log, "a") { |stream| stream.puts(JSON.generate(record)) }
