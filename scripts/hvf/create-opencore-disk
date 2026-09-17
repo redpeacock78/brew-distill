@@ -56,9 +56,20 @@ mount_dir="$work_dir/mount"
 work_image="$work_dir/opencore.dmg"
 mkdir -p "$mount_dir"
 attached=
+detach_image() {
+  detach_target=$1
+  detach_attempt=1
+  while ! hdiutil detach "$detach_target" >/dev/null 2>&1; do
+    if [ "$detach_attempt" -ge 5 ]; then
+      return 1
+    fi
+    sleep 1
+    detach_attempt=$((detach_attempt + 1))
+  done
+}
 cleanup() {
   if [ -n "$attached" ]; then
-    hdiutil detach "$attached" >/dev/null 2>&1 || true
+    detach_image "$attached" || true
   fi
   rm -rf "$work_dir"
 }
@@ -74,7 +85,10 @@ test -n "$attached" || {
 }
 cp -R "$source_dir/EFI" "$mount_dir/"
 sync
-hdiutil detach "$attached" >/dev/null
+detach_image "$attached" || {
+  printf '%s\n' "create-opencore-disk: hdiutil could not detach the temporary image" >&2
+  exit 1
+}
 attached=
 
 hdiutil convert "$work_image" -format UDRW -o "$output" >/dev/null
