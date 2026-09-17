@@ -846,21 +846,41 @@ test -s "$recovery" || {
   printf '%s\n' "bootstrap-legacy: hdiutil did not create recovery image" >&2
   exit 1
 }
-recovery_mount="$work_dir/recovery-version"
 recovery_attach_log="$output_dir/recovery-version-attach.log"
 recovery_system_version="$output_dir/recovery-system-version.txt"
-mkdir -p "$recovery_mount"
-if hdiutil attach -readonly -nobrowse -mountpoint "$recovery_mount" "$recovery" > "$recovery_attach_log" 2>&1; then
+recovery_disk=
+recovery_system_disk=
+recovery_system_mount=
+if hdiutil attach -readonly -nobrowse -nomount "$recovery" > "$recovery_attach_log" 2>&1; then
+  recovery_disk=$(awk '/^\/dev\/disk[0-9]+[[:space:]]+EF57347C-/ {print $1; exit}' "$recovery_attach_log")
+  if [ -n "$recovery_disk" ]; then
+    recovery_system_disk=$(diskutil apfs list "$recovery_disk" 2>> "$recovery_attach_log" | \
+      awk '$0 ~ /APFS Volume Disk \(Role\):/ && $0 ~ /\(System\)/ {print $(NF - 1); exit}')
+  fi
+  if [ -n "$recovery_system_disk" ] && \
+    diskutil mount "$recovery_system_disk" >> "$recovery_attach_log" 2>&1; then
+    recovery_system_mount=$(diskutil info "$recovery_system_disk" 2>> "$recovery_attach_log" | \
+      awk -F': ' '$1 ~ /Mount Point/ {value=$2; sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); print value; exit}')
+  fi
+  recovery_version_plist="$recovery_system_mount/System/Library/CoreServices/SystemVersion.plist"
   {
     printf '%s\n' "recovery=$recovery"
+    printf '%s\n' "recovery_disk=$recovery_disk" \
+      "recovery_system_disk=$recovery_system_disk" \
+      "recovery_system_mount=$recovery_system_mount"
     printf '%s' 'ProductVersion='
     "$plutil_cmd" -extract ProductVersion raw -o - \
-      "$recovery_mount/System/Library/CoreServices/SystemVersion.plist" 2>&1 || true
+      "$recovery_version_plist" 2>&1 || true
     printf '%s' 'ProductBuildVersion='
     "$plutil_cmd" -extract ProductBuildVersion raw -o - \
-      "$recovery_mount/System/Library/CoreServices/SystemVersion.plist" 2>&1 || true
+      "$recovery_version_plist" 2>&1 || true
   } > "$recovery_system_version"
-  hdiutil detach "$recovery_mount" >> "$recovery_attach_log" 2>&1 || true
+  if [ -n "$recovery_system_disk" ]; then
+    diskutil unmount "$recovery_system_disk" >> "$recovery_attach_log" 2>&1 || true
+  fi
+  if [ -n "$recovery_disk" ]; then
+    hdiutil detach "$recovery_disk" >> "$recovery_attach_log" 2>&1 || true
+  fi
 else
   printf '%s\n' 'Recovery image version inspection failed' > "$recovery_system_version"
 fi

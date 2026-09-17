@@ -132,6 +132,9 @@ grep -F -- "hdiutil create -size \"\$install_media_size\"" "$repo_dir/scripts/hv
 grep -F -- 'installer-app-info.txt' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'recovery-system-version.txt' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'DISTILL_LEGACY_MATCHING_RECOVERY' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'diskutil apfs list' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'recovery_system_disk' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'APFS Volume Disk' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'x86_64BaseSystem.dmg' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'matching Recovery expanded' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'matching-recovery.log' "$repo_dir/scripts/hvf/export-diagnostics" >/dev/null
