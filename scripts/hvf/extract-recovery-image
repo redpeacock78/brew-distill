@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Expand Apple's full-replacement BXDIFF50 Recovery payload."""
+
+from __future__ import annotations
+
+import hashlib
+import lzma
+import struct
+import sys
+from pathlib import Path
+
+
+HEADER = struct.Struct("<8sQQQQ20s")
+PBZX_SIZES = struct.Struct(">QQ")
+
+
+def expand(patch_path: Path, output_path: Path) -> None:
+    patch_size = patch_path.stat().st_size
+    if patch_size < HEADER.size:
+        raise ValueError("BXDIFF50 payload is truncated")
+
+    with patch_path.open("rb") as patch:
+        magic, _version, output_size, control_size, extra_size, output_sha1 = HEADER.unpack(
+            patch.read(HEADER.size)
+        )
+        if magic != b"BXDIFF50":
+            raise ValueError("BXDIFF50 magic is missing")
+        if control_size != 0 or extra_size != patch_size - HEADER.size:
+            raise ValueError("BXDIFF50 payload is not a full replacement")
+        if patch.read(4) != b"pbzx":
+            raise ValueError("BXDIFF50 replacement payload is not PBZX")
+        block_size_data = patch.read(8)
+        if len(block_size_data) != 8:
+            raise ValueError("PBZX header is truncated")
+        block_size = struct.unpack(">Q", block_size_data)[0]
+        if block_size == 0:
+            raise ValueError("PBZX block size is invalid")
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        partial_path = output_path.with_name(f".{output_path.name}.part")
+        total = 0
+        digest = hashlib.sha1()
+        try:
+            with partial_path.open("wb") as output:
+                while True:
+                    sizes = patch.read(PBZX_SIZES.size)
+                    if not sizes:
+                        break
+                    if len(sizes) != PBZX_SIZES.size:
+                        raise ValueError("PBZX block header is truncated")
+                    inflate_size, deflate_size = PBZX_SIZES.unpack(sizes)
+                    if inflate_size == 0 or deflate_size > inflate_size:
+                        raise ValueError("PBZX block sizes are invalid")
+                    if deflate_size > patch_size - patch.tell():
+                        raise ValueError("PBZX block exceeds the BXDIFF50 payload")
+                    compressed = patch.read(deflate_size)
+                    if len(compressed) != deflate_size:
+                        raise ValueError("PBZX block is truncated")
+                    data = (
+                        compressed
+                        if deflate_size == inflate_size
+                        else lzma.decompress(compressed, format=lzma.FORMAT_XZ)
+                    )
+                    if len(data) != inflate_size:
+                        raise ValueError("PBZX block size does not match its output")
+                    total += len(data)
+                    if total > output_size:
+                        raise ValueError("PBZX output exceeds BXDIFF50 size")
+                    output.write(data)
+                    digest.update(data)
+
+                if patch.read(1):
+                    raise ValueError("BXDIFF50 payload has trailing data")
+                if total != output_size:
+                    raise ValueError("PBZX output does not match BXDIFF50 size")
+                if digest.digest() != output_sha1:
+                    raise ValueError("Recovery SHA-1 does not match BXDIFF50")
+                output.flush()
+            partial_path.replace(output_path)
+        except Exception:
+            partial_path.unlink(missing_ok=True)
+            raise
+
+
+def main() -> int:
+    if len(sys.argv) != 3:
+        print("usage: extract-recovery-image BXDIFF50-PATCH OUTPUT.dmg", file=sys.stderr)
+        return 2
+    try:
+        expand(Path(sys.argv[1]), Path(sys.argv[2]))
+    except (OSError, ValueError, lzma.LZMAError, struct.error) as error:
+        print(f"extract-recovery-image: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

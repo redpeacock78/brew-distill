@@ -27,6 +27,7 @@ port=${DISTILL_GUEST_SSH_PORT:-2222}
 guest_ssh_cmd="$repo_dir/scripts/hvf/guest-ssh"
 unattended="$repo_dir/scripts/hvf/unattended-install"
 fetch_recovery="$repo_dir/scripts/hvf/fetch-recovery"
+extract_recovery="$repo_dir/scripts/hvf/extract-recovery-image"
 public_key=${DISTILL_GUEST_SSH_PUBLIC_KEY_FILE:-}
 ssh_identity=${DISTILL_GUEST_SSH_IDENTITY:-}
 require_ssh_identity=${DISTILL_REQUIRE_GUEST_SSH_IDENTITY:-0}
@@ -206,6 +207,10 @@ test -x "$fetch_recovery" || {
   printf '%s\n' "bootstrap-legacy: recovery downloader is unavailable: $fetch_recovery" >&2
   exit 1
 }
+test -x "$extract_recovery" || {
+  printf '%s\n' "bootstrap-legacy: recovery extractor is unavailable: $extract_recovery" >&2
+  exit 1
+}
 test -n "$qemu_args" || {
   printf '%s\n' "bootstrap-legacy: DISTILL_QEMU_ARGS_JSON is required" >&2
   exit 1
@@ -242,7 +247,7 @@ command -v "$plutil_cmd" >/dev/null 2>&1 || {
   printf '%s\n' "bootstrap-legacy: plutil is required" >&2
   exit 1
 }
-for tool in "$qemu_bin" "$qemu_img" brew curl ditto hdiutil jq openssl pkgbuild productbuild pkgutil python3 shasum ssh-keygen; do
+for tool in "$qemu_bin" "$qemu_img" brew curl ditto hdiutil jq openssl pkgbuild productbuild pkgutil python3 shasum ssh-keygen unzip; do
   command -v "$tool" >/dev/null 2>&1 || {
     printf '%s\n' "bootstrap-legacy: required tool is unavailable: $tool" >&2
     exit 1
@@ -690,6 +695,8 @@ command_diagnostic="$output_dir/startosinstall-command.txt"
 recovery_metadata="$output_dir/recovery-image.json"
 matching_recovery_log="$output_dir/matching-recovery.log"
 matching_recovery_source="$work_dir/matching-BaseSystem.dmg"
+matching_recovery_patch_source="$work_dir/x86_64BaseSystem.dmg"
+matching_recovery_chunklist="$work_dir/.BaseSystem.dmg.chunklist"
 matching_recovery_ready=0
 matching_recovery_started=$(date +%s)
 : > "$matching_recovery_log"
@@ -700,16 +707,28 @@ if [ "${DISTILL_LEGACY_MATCHING_RECOVERY:-0}" = "1" ] && [ -f "$installer/Conten
     "$installer/Contents/SharedSupport/SharedSupport.dmg" >> "$matching_recovery_log" 2>&1; then
     matching_recovery_file=$(find "$matching_recovery_mount" -type f \
       -path '*/AssetData/Restore/BaseSystem.dmg' -print | sed -n '1p')
+    matching_recovery_patch_file=$(find "$matching_recovery_mount" -type f \
+      -path '*/AssetData/payloadv2/basesystem_patches/x86_64BaseSystem.dmg' -print | sed -n '1p')
     matching_recovery_zip=$(find "$matching_recovery_mount/com_apple_MobileAsset_MacSoftwareUpdate" \
       -maxdepth 1 -type f -name '*.zip' -print 2>/dev/null | sed -n '1p')
     if [ -z "$matching_recovery_zip" ]; then
       matching_recovery_zip=$(find "$matching_recovery_mount" -type f -name '*.zip' -print 2>/dev/null | sed -n '1p')
     fi
     printf '%s\n' "SharedSupport BaseSystem=$matching_recovery_file" \
+      "SharedSupport patch=$matching_recovery_patch_file" \
       "SharedSupport asset zip=$matching_recovery_zip" >> "$matching_recovery_log"
     if [ -n "$matching_recovery_file" ] && cp "$matching_recovery_file" "$matching_recovery_source"; then
       matching_recovery_ready=1
       printf '%s\n' "matching Recovery copied from $matching_recovery_file" >> "$matching_recovery_log"
+      matching_recovery_chunklist_file=$(find "$matching_recovery_mount" -type f \
+        -path '*/AssetData/Restore/BaseSystem.chunklist' -print | sed -n '1p')
+      if [ -n "$matching_recovery_chunklist_file" ]; then
+        cp "$matching_recovery_chunklist_file" "$matching_recovery_chunklist"
+      fi
+    elif [ -n "$matching_recovery_patch_file" ] && \
+      "$extract_recovery" "$matching_recovery_patch_file" "$matching_recovery_source" >> "$matching_recovery_log" 2>&1; then
+      matching_recovery_ready=1
+      printf '%s\n' "matching Recovery expanded from $matching_recovery_patch_file" >> "$matching_recovery_log"
     elif [ -n "$matching_recovery_zip" ]; then
       matching_recovery_entry=$(unzip -Z1 "$matching_recovery_zip" 2>> "$matching_recovery_log" | \
         awk '
@@ -722,12 +741,43 @@ if [ "${DISTILL_LEGACY_MATCHING_RECOVERY:-0}" = "1" ] && [ -f "$installer/Conten
             if (restore != "") print restore
           }
         ' || true)
+      matching_recovery_chunklist_entry=$(unzip -Z1 "$matching_recovery_zip" 2>> "$matching_recovery_log" | \
+        awk '
+          {
+            sub(/\r$/, "")
+            path=tolower($0)
+            if (path ~ /(^|\/)assetdata\/restore\/basesystem\.chunklist$/ && chunklist == "") chunklist=$0
+          }
+          END { if (chunklist != "") print chunklist }
+        ' || true)
+      matching_recovery_patch_entry=$(unzip -Z1 "$matching_recovery_zip" 2>> "$matching_recovery_log" | \
+        awk '
+          {
+            sub(/\r$/, "")
+            path=tolower($0)
+            if (path ~ /(^|\/)assetdata\/payloadv2\/basesystem_patches\/x86_64basesystem\.dmg$/ && patch == "") patch=$0
+          }
+          END { if (patch != "") print patch }
+        ' || true)
       printf '%s\n' "SharedSupport Recovery entry=$matching_recovery_entry" >> "$matching_recovery_log"
+      printf '%s\n' "SharedSupport chunklist entry=$matching_recovery_chunklist_entry" \
+        "SharedSupport patch entry=$matching_recovery_patch_entry" >> "$matching_recovery_log"
       if [ -n "$matching_recovery_entry" ] && \
         unzip -p "$matching_recovery_zip" "$matching_recovery_entry" > "$matching_recovery_source" 2>> "$matching_recovery_log" && \
         [ -s "$matching_recovery_source" ]; then
         matching_recovery_ready=1
         printf '%s\n' "matching Recovery extracted from $matching_recovery_entry" >> "$matching_recovery_log"
+      fi
+      if [ "$matching_recovery_ready" != "1" ] && [ -n "$matching_recovery_patch_entry" ] && \
+        unzip -p "$matching_recovery_zip" "$matching_recovery_patch_entry" > "$matching_recovery_patch_source" 2>> "$matching_recovery_log" && \
+        [ -s "$matching_recovery_patch_source" ] && \
+        "$extract_recovery" "$matching_recovery_patch_source" "$matching_recovery_source" >> "$matching_recovery_log" 2>&1; then
+        matching_recovery_ready=1
+        printf '%s\n' "matching Recovery expanded from $matching_recovery_patch_entry" >> "$matching_recovery_log"
+      fi
+      if [ -n "$matching_recovery_chunklist_entry" ]; then
+        unzip -p "$matching_recovery_zip" "$matching_recovery_chunklist_entry" > "$matching_recovery_chunklist" \
+          2>> "$matching_recovery_log" || true
       fi
     fi
     if [ "$matching_recovery_ready" != "1" ]; then

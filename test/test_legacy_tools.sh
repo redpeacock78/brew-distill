@@ -13,6 +13,40 @@ trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$test_dir/out"
 test -x "$repo_dir/scripts/hvf/fetch-recovery"
+test -x "$repo_dir/scripts/hvf/extract-recovery-image"
+python3 -c 'import pathlib, sys; path = pathlib.Path(sys.argv[1]); compile(path.read_text(encoding="utf-8"), str(path), "exec")' \
+  "$repo_dir/scripts/hvf/extract-recovery-image"
+python3 - "$test_dir/sample-recovery.patch" "$test_dir/sample-recovery.expected" <<'PY'
+import hashlib
+import lzma
+import struct
+import sys
+from pathlib import Path
+
+patch_path = Path(sys.argv[1])
+expected_path = Path(sys.argv[2])
+blocks = [b"raw-block" * 512, b"xz-block" * 512]
+expected = b"".join(blocks)
+payload = bytearray(b"pbzx" + struct.pack(">Q", 4096))
+for index, block in enumerate(blocks):
+    compressed = block if index == 0 else lzma.compress(block, format=lzma.FORMAT_XZ)
+    payload.extend(struct.pack(">QQ", len(block), len(compressed)))
+    payload.extend(compressed)
+header = struct.pack(
+    "<8sQQQQ20s",
+    b"BXDIFF50",
+    0,
+    len(expected),
+    0,
+    len(payload),
+    hashlib.sha1(expected).digest(),
+)
+patch_path.write_bytes(header + payload)
+expected_path.write_bytes(expected)
+PY
+python3 "$repo_dir/scripts/hvf/extract-recovery-image" \
+  "$test_dir/sample-recovery.patch" "$test_dir/sample-recovery.dmg"
+cmp "$test_dir/sample-recovery.expected" "$test_dir/sample-recovery.dmg"
 grep -F -- 'public_key_fingerprint' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'firstboot.log' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 python3 -c 'import pathlib, sys; path = pathlib.Path(sys.argv[1]); compile(path.read_text(encoding="utf-8"), str(path), "exec")' \
@@ -98,6 +132,8 @@ grep -F -- "hdiutil create -size \"\$install_media_size\"" "$repo_dir/scripts/hv
 grep -F -- 'installer-app-info.txt' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'recovery-system-version.txt' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'DISTILL_LEGACY_MATCHING_RECOVERY' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'x86_64BaseSystem.dmg' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'matching Recovery expanded' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'matching-recovery.log' "$repo_dir/scripts/hvf/export-diagnostics" >/dev/null
 grep -F -- 'matching_recovery_prepare' "$repo_dir/scripts/hvf/record-timing" >/dev/null
 grep -F -- 'install_media_cache' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
