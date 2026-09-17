@@ -77,6 +77,8 @@ grep -F -- 'PROCESS_TREE' "$install_script" >/dev/null
 grep -F -- 'rotation_rate=' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- "disk_rotation_rate=\${DISTILL_QEMU_DISK_ROTATION_RATE:-0}" "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'DISTILL_QEMU_DISK_CACHE' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'DISTILL_QEMU_CPU_MODEL' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'cannot apply QEMU CPU model' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- "ditto \"\$installer\"/." "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'DISTILL_LEGACY_INSTALL_TARGET_MODE' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- '--eraseinstall --newvolumename MACOS' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null

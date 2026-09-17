@@ -44,6 +44,7 @@ disk_profile=${DISTILL_QEMU_DISK_PROFILE:-current}
 disk_format=${DISTILL_BASE_FORMAT:-qcow2}
 install_package_mode=${DISTILL_LEGACY_INSTALLPACKAGE_MODE:-required}
 cpu_profile=${DISTILL_QEMU_CPU_PROFILE:-current}
+cpu_model=${DISTILL_QEMU_CPU_MODEL:-current}
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-legacy-bootstrap.XXXXXX")
 qemu_pid=
 install_media=
@@ -107,6 +108,16 @@ case "$cpu_profile" in
   6vcpu) cpu_smp='6,cores=6,sockets=1' ;;
   *)
     printf '%s\n' "bootstrap-legacy: DISTILL_QEMU_CPU_PROFILE must be current, 4vcpu, or 6vcpu" >&2
+    exit 2
+    ;;
+esac
+case "$cpu_model" in
+  current) ;;
+  host)
+    qemu_cpu_model=host
+    ;;
+  *)
+    printf '%s\n' "bootstrap-legacy: DISTILL_QEMU_CPU_MODEL must be current or host" >&2
     exit 2
     ;;
 esac
@@ -196,6 +207,20 @@ if [ -n "$cpu_smp" ]; then
     ) | if .replaced then .args else error("-smp option was not found") end
   ') || {
     printf '%s\n' "bootstrap-legacy: cannot apply QEMU CPU profile to DISTILL_QEMU_ARGS_JSON" >&2
+    exit 2
+  }
+fi
+if [ "$cpu_model" = host ]; then
+  qemu_args=$(printf '%s' "$qemu_args" | jq --arg cpu "$qemu_cpu_model" '
+    reduce .[] as $arg ({args:[],skip:false,replaced:false};
+      if .skip then .skip=false
+      elif $arg == "-cpu" then .args += ["-cpu",$cpu] | .skip=true | .replaced=true
+      elif ($arg | startswith("-cpu=")) then .args += ["-cpu=" + $cpu] | .replaced=true
+      else .args += [$arg]
+      end
+    ) | if .replaced then .args else error("-cpu option was not found") end
+  ') || {
+    printf '%s\n' "bootstrap-legacy: cannot apply QEMU CPU model to DISTILL_QEMU_ARGS_JSON" >&2
     exit 2
   }
 fi
@@ -808,10 +833,11 @@ jq -n \
   --arg disk_cache "$disk_cache" \
   --arg disk_profile "${DISTILL_QEMU_DISK_PROFILE:-current}" \
   --arg cpu_profile "$cpu_profile" \
+  --arg cpu_model "$cpu_model" \
   --arg disk_format "$disk_format" \
   --arg rotation_rate "$disk_rotation_rate" \
   --argjson args "$sanitized_qemu_args" \
-  '{schema:1,qemu:$qemu,qemu_version:$qemu_version,args_sha256:$args_sha256,args:$args,cpu:{profile:$cpu_profile},disk:{cache:$disk_cache,format:$disk_format,profile:$disk_profile,rotation_rate:($rotation_rate|tonumber)},vm_image:false}' \
+  '{schema:1,qemu:$qemu,qemu_version:$qemu_version,args_sha256:$args_sha256,args:$args,cpu:{profile:$cpu_profile,model:$cpu_model},disk:{cache:$disk_cache,format:$disk_format,profile:$disk_profile,rotation_rate:($rotation_rate|tonumber)},vm_image:false}' \
   > "$output_dir/qemu-launch.json"
 
 guest_boot_started=$(date +%s)

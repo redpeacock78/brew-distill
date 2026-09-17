@@ -45,6 +45,14 @@ on:
           - current
           - 4vcpu
           - 6vcpu
+      qemu_cpu_model:
+        description: QEMU CPU feature profile for Legacy diagnosis
+        required: true
+        default: current
+        type: choice
+        options:
+          - current
+          - host
       qemu_disk_cache:
         description: QEMU cache mode for the job-local macOS disk
         required: true
@@ -106,6 +114,7 @@ jobs:
       DISTILL_UNATTENDED_INSTALL_REBOOT_TIMEOUT: ${{ inputs.install_reboot_timeout }}
       DISTILL_LEGACY_INSTALLPACKAGE_MODE: ${{ inputs.install_package_mode }}
       DISTILL_QEMU_CPU_PROFILE: ${{ inputs.qemu_cpu_profile }}
+      DISTILL_QEMU_CPU_MODEL: ${{ inputs.qemu_cpu_model }}
       DISTILL_BATCH_JSON: ${{ inputs.batch }}
       DISTILL_LEGACY_BOOTSTRAP: ${{ vars.DISTILL_LEGACY_BOOTSTRAP }}
       DISTILL_OPENCORE_DIR: ${{ vars.DISTILL_OPENCORE_DIR }}
@@ -240,6 +249,13 @@ jobs:
             current|4vcpu|6vcpu) ;;
             *)
               echo "Legacy QEMU CPU profile must be current, 4vcpu, or 6vcpu" >&2
+              exit 1
+              ;;
+          esac
+          case "$DISTILL_QEMU_CPU_MODEL" in
+            current|host) ;;
+            *)
+              echo "Legacy QEMU CPU model must be current or host" >&2
               exit 1
               ;;
           esac
