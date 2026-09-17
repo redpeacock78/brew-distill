@@ -698,8 +698,15 @@ if [ "${DISTILL_LEGACY_MATCHING_RECOVERY:-0}" = "1" ] && [ -f "$installer/Conten
   mkdir -p "$matching_recovery_mount"
   if hdiutil attach -readonly -nobrowse -mountpoint "$matching_recovery_mount" \
     "$installer/Contents/SharedSupport/SharedSupport.dmg" >> "$matching_recovery_log" 2>&1; then
-    matching_recovery_file=$(find "$matching_recovery_mount" -maxdepth 6 -type f -name 'BaseSystem.dmg' -print | sed -n '1p')
-    matching_recovery_zip=$(find "$matching_recovery_mount" -maxdepth 3 -type f -name '*.zip' -print | sed -n '1p')
+    matching_recovery_file=$(find "$matching_recovery_mount" -type f \
+      -path '*/AssetData/Restore/BaseSystem.dmg' -print | sed -n '1p')
+    matching_recovery_zip=$(find "$matching_recovery_mount/com_apple_MobileAsset_MacSoftwareUpdate" \
+      -maxdepth 1 -type f -name '*.zip' -print 2>/dev/null | sed -n '1p')
+    if [ -z "$matching_recovery_zip" ]; then
+      matching_recovery_zip=$(find "$matching_recovery_mount" -type f -name '*.zip' -print 2>/dev/null | sed -n '1p')
+    fi
+    printf '%s\n' "SharedSupport BaseSystem=$matching_recovery_file" \
+      "SharedSupport asset zip=$matching_recovery_zip" >> "$matching_recovery_log"
     matching_recovery_entry=
     if [ -n "$matching_recovery_file" ] && cp "$matching_recovery_file" "$matching_recovery_source"; then
       matching_recovery_ready=1
