@@ -177,7 +177,7 @@ output=
 for argument
 do
   case "$argument" in
-    *.qcow2) output=$argument ;;
+    *.qcow2|*.raw) output=$argument ;;
   esac
 done
 test -n "$output"
@@ -190,6 +190,13 @@ QEMU_IMG="$test_dir/create-qemu-img-options" QEMU_IMG_LOG="$test_dir/qemu-img-op
 grep -F -- 'create -f qcow2 -o cluster_size=2M,preallocation=metadata,lazy_refcounts=on' \
   "$test_dir/qemu-img-options.log" >/dev/null
 jq -e '.format == "qcow2" and .options == "cluster_size=2M,preallocation=metadata,lazy_refcounts=on"' \
+  "$test_dir/out/base-create.json" >/dev/null
+
+QEMU_IMG="$test_dir/create-qemu-img-options" QEMU_IMG_LOG="$test_dir/qemu-img-options.log" \
+  DISTILL_BASE_FORMAT=raw \
+  "$repo_dir/scripts/hvf/create-base" "$test_dir/raw-base.raw" 64G "$test_dir/out" >/dev/null
+grep -F -- 'create -f raw' "$test_dir/qemu-img-options.log" >/dev/null
+jq -e '.format == "raw" and .options == null' \
   "$test_dir/out/base-create.json" >/dev/null
 
 cp "$repo_dir/test/fake-qemu-img" "$test_dir/bin/qemu-img"

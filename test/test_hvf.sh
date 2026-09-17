@@ -39,6 +39,15 @@ mkdir -p "$test_dir/overlays"
 test -s "$test_dir/overlays/overlay.qcow2"
 grep -Fqx -- "create -f qcow2 -F qcow2 -b $test_dir/base.qcow2 $test_dir/overlays/overlay.qcow2" "$test_dir/qemu-img.log"
 
+printf '%s\n' base > "$test_dir/base.raw"
+(
+  cd "$test_dir"
+  QEMU_IMG="$test_dir/bin/qemu-img" QEMU_IMG_FORMAT=raw QEMU_IMG_LOG="$test_dir/qemu-img.log" \
+    "$repo_dir/scripts/hvf/create-overlay" base.raw overlays/raw-overlay.qcow2
+)
+test -s "$test_dir/overlays/raw-overlay.qcow2"
+grep -Fqx -- "create -f qcow2 -F raw -b $test_dir/base.raw $test_dir/overlays/raw-overlay.qcow2" "$test_dir/qemu-img.log"
+
 if (
   cd "$test_dir"
   QEMU_IMG="$test_dir/bin/qemu-img" QEMU_IMG_LOG="$test_dir/qemu-img.log" \

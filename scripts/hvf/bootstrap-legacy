@@ -40,6 +40,8 @@ qemu_img=${QEMU_IMG:-qemu-img}
 plutil_cmd=${DISTILL_PLUTIL:-plutil}
 disk_rotation_rate=${DISTILL_QEMU_DISK_ROTATION_RATE:-0}
 disk_cache=${DISTILL_QEMU_DISK_CACHE:-writeback}
+disk_profile=${DISTILL_QEMU_DISK_PROFILE:-current}
+disk_format=${DISTILL_BASE_FORMAT:-qcow2}
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-legacy-bootstrap.XXXXXX")
 qemu_pid=
 install_media=
@@ -69,6 +71,23 @@ case "$disk_cache" in
   writeback|unsafe) ;;
   *)
     printf '%s\n' "bootstrap-legacy: DISTILL_QEMU_DISK_CACHE must be writeback or unsafe" >&2
+    exit 2
+    ;;
+esac
+case "$disk_profile" in
+  current|tuned|raw) ;;
+  *)
+    printf '%s\n' "bootstrap-legacy: DISTILL_QEMU_DISK_PROFILE must be current, tuned, or raw" >&2
+    exit 2
+    ;;
+esac
+if [ "$disk_profile" = raw ]; then
+  disk_format=raw
+fi
+case "$disk_format" in
+  qcow2|raw) ;;
+  *)
+    printf '%s\n' "bootstrap-legacy: base image format must be qcow2 or raw" >&2
     exit 2
     ;;
 esac
@@ -693,6 +712,7 @@ args_json=$(
     --arg qmp_monitor "$qmp_monitor" \
     --arg code "$qemu_code" \
     --arg vars "$qemu_vars" \
+    --arg disk_format "$disk_format" \
     --arg rotation_rate "$disk_rotation_rate" \
     --arg disk_cache "$disk_cache" \
     'map(
@@ -702,8 +722,9 @@ args_json=$(
        gsub("\\{\\{INSTALL_MEDIA\\}\\}"; $media) |
        gsub("\\{\\{QEMU_MONITOR\\}\\}"; $monitor) |
        gsub("\\{\\{QMP_MONITOR\\}\\}"; $qmp_monitor) |
-       gsub("\\{\\{QEMU_CODE\\}\\}"; $code) |
-       gsub("\\{\\{QEMU_VARS\\}\\}"; $vars)
+     gsub("\\{\\{QEMU_CODE\\}\\}"; $code) |
+       gsub("\\{\\{QEMU_VARS\\}\\}"; $vars) |
+       if $disk_format == "raw" and contains($disk) then gsub("format=qcow2"; "format=raw") else . end
      ) as $args
      | if any($args[]; contains($opencore)) then $args else $args + [
          "-drive", ("id=OpenCoreBoot,if=none,format=raw,file=" + $opencore),
@@ -717,8 +738,8 @@ args_json=$(
          "-drive", ("id=InstallMedia,if=none,format=raw,file=" + $media),
          "-device", "ide-hd,id=InstallMediaDevice,bus=sata.4,drive=InstallMedia"
        ] end
-     | if any(.[]; contains($disk)) then . else . + [
-         "-drive", ("id=MacHDD,if=none,format=qcow2,cache=" + $disk_cache + ",file=" + $disk),
+       | if any(.[]; contains($disk)) then . else . + [
+         "-drive", ("id=MacHDD,if=none,format=" + $disk_format + ",cache=" + $disk_cache + ",file=" + $disk),
          "-device", ("ide-hd,id=MacHDDDevice,bus=sata.5,drive=MacHDD,rotation_rate=" + $rotation_rate)
        ] end
      | if any(.[]; . == "-monitor" or startswith("-monitor=")) then . else . + [
@@ -745,9 +766,10 @@ jq -n \
   --arg args_sha256 "$qemu_args_sha256" \
   --arg disk_cache "$disk_cache" \
   --arg disk_profile "${DISTILL_QEMU_DISK_PROFILE:-current}" \
+  --arg disk_format "$disk_format" \
   --arg rotation_rate "$disk_rotation_rate" \
   --argjson args "$sanitized_qemu_args" \
-  '{schema:1,qemu:$qemu,qemu_version:$qemu_version,args_sha256:$args_sha256,args:$args,disk:{cache:$disk_cache,profile:$disk_profile,rotation_rate:($rotation_rate|tonumber)},vm_image:false}' \
+  '{schema:1,qemu:$qemu,qemu_version:$qemu_version,args_sha256:$args_sha256,args:$args,disk:{cache:$disk_cache,format:$disk_format,profile:$disk_profile,rotation_rate:($rotation_rate|tonumber)},vm_image:false}' \
   > "$output_dir/qemu-launch.json"
 
 guest_boot_started=$(date +%s)

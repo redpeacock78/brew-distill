@@ -39,6 +39,10 @@ EOF
 cat > "$test_dir/bin/qemu-img" <<'EOF'
 #!/bin/sh
 set -eu
+if [ "${1:-}" = info ]; then
+  printf '%s\n' '{"format":"qcow2"}'
+  exit 0
+fi
 case "$1" in
   create)
     if [ "$#" -eq 5 ]; then

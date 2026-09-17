@@ -30,22 +30,38 @@ command -v "$qemu_img" >/dev/null 2>&1 || {
   exit 1
 }
 
-qcow2_options=${DISTILL_BASE_QCOW2_OPTIONS:-}
-case "$qcow2_options" in
-  '' )
-    "$qemu_img" create -f qcow2 "$base" "$size"
-    ;;
-  *[!A-Za-z0-9_=,.-]*)
-    printf '%s\n' "create-base: invalid qcow2 options: $qcow2_options" >&2
+base_format=${DISTILL_BASE_FORMAT:-qcow2}
+case "$base_format" in
+  qcow2|raw) ;;
+  *)
+    printf '%s\n' "create-base: base format must be qcow2 or raw" >&2
     exit 2
     ;;
-  *)
-    "$qemu_img" create -f qcow2 -o "$qcow2_options" "$base" "$size"
-    ;;
 esac
+qcow2_options=${DISTILL_BASE_QCOW2_OPTIONS:-}
+if [ "$base_format" = raw ]; then
+  [ -z "$qcow2_options" ] || {
+    printf '%s\n' "create-base: qcow2 options cannot be used with raw format" >&2
+    exit 2
+  }
+  "$qemu_img" create -f raw "$base" "$size"
+else
+  case "$qcow2_options" in
+    '' )
+      "$qemu_img" create -f qcow2 "$base" "$size"
+      ;;
+    *[!A-Za-z0-9_=,.-]*)
+      printf '%s\n' "create-base: invalid qcow2 options: $qcow2_options" >&2
+      exit 2
+      ;;
+    *)
+      "$qemu_img" create -f qcow2 -o "$qcow2_options" "$base" "$size"
+      ;;
+  esac
+fi
 if command -v jq >/dev/null 2>&1; then
-  jq -n --arg base "$base" --arg size "$size" --arg options "$qcow2_options" \
-    '{schema:1,base:$base,size:$size,format:"qcow2",options:(if $options == "" then null else $options end),read_only:false,persistent:false}' \
+  jq -n --arg base "$base" --arg size "$size" --arg format "$base_format" --arg options "$qcow2_options" \
+    '{schema:1,base:$base,size:$size,format:$format,options:(if $options == "" then null else $options end),read_only:false,persistent:false}' \
     > "$output_dir/base-create.json"
 fi
 printf '%s\n' "base created: $base ($size)"

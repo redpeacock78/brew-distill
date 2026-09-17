@@ -37,13 +37,14 @@ on:
           - writeback
           - unsafe
       qemu_disk_profile:
-        description: qcow2 layout profile for the job-local macOS disk
+        description: disk layout profile for the job-local macOS disk
         required: true
         default: current
         type: choice
         options:
           - current
           - tuned
+          - raw
       qemu_disk_rotation_rate:
         description: QEMU rotation rate hint for the job-local macOS disk
         required: true
@@ -203,9 +204,9 @@ jobs:
               ;;
           esac
           case "$DISTILL_QEMU_DISK_PROFILE" in
-            current|tuned) ;;
+            current|tuned|raw) ;;
             *)
-              echo "Legacy QEMU disk profile must be current or tuned" >&2
+              echo "Legacy QEMU disk profile must be current, tuned, or raw" >&2
               exit 1
               ;;
           esac
@@ -337,6 +338,9 @@ jobs:
             current) ;;
             tuned)
               export DISTILL_BASE_QCOW2_OPTIONS='cluster_size=2M,preallocation=metadata,lazy_refcounts=on'
+              ;;
+            raw)
+              export DISTILL_BASE_FORMAT=raw
               ;;
           esac
           DISTILL_VERIFY_AFTER_BUILD=0 \

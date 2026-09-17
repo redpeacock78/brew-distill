@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -ne 2 ]; then
-  printf '%s\n' "usage: create-overlay BASE.qcow2 OVERLAY.qcow2" >&2
+  printf '%s\n' "usage: create-overlay BASE-IMAGE OVERLAY.qcow2" >&2
   exit 2
 fi
 
@@ -11,6 +11,10 @@ overlay=$2
 qemu_img=${QEMU_IMG:-qemu-img}
 command -v "$qemu_img" >/dev/null 2>&1 || {
   printf '%s\n' "hvf/create-overlay: qemu-img is required" >&2
+  exit 1
+}
+command -v jq >/dev/null 2>&1 || {
+  printf '%s\n' "hvf/create-overlay: jq is required" >&2
   exit 1
 }
 test -f "$base" || {
@@ -28,4 +32,16 @@ overlay_name=$(basename -- "$overlay")
 mkdir -p "$overlay_dir"
 overlay=$(cd -- "$overlay_dir" && pwd)/$overlay_name
 
-exec "$qemu_img" create -f qcow2 -F qcow2 -b "$base" "$overlay"
+base_format=${DISTILL_BASE_FORMAT:-}
+if [ -z "$base_format" ]; then
+  base_format=$("$qemu_img" info --output=json "$base" | jq -r '.format // empty')
+fi
+case "$base_format" in
+  qcow2|raw) ;;
+  *)
+    printf '%s\n' "hvf/create-overlay: unsupported base image format: $base_format" >&2
+    exit 1
+    ;;
+esac
+
+exec "$qemu_img" create -f qcow2 -F "$base_format" -b "$base" "$overlay"
