@@ -703,7 +703,7 @@ matching_recovery_started=$(date +%s)
 if [ "${DISTILL_LEGACY_MATCHING_RECOVERY:-0}" = "1" ] && [ -f "$installer/Contents/SharedSupport/SharedSupport.dmg" ]; then
   matching_recovery_mount="$work_dir/matching-recovery"
   mkdir -p "$matching_recovery_mount"
-  if hdiutil attach -readonly -nobrowse -mountpoint "$matching_recovery_mount" \
+  if hdiutil attach -readonly -nobrowse -noverify -mountpoint "$matching_recovery_mount" \
     "$installer/Contents/SharedSupport/SharedSupport.dmg" >> "$matching_recovery_log" 2>&1; then
     matching_recovery_file=$(find "$matching_recovery_mount" -type f \
       -path '*/AssetData/Restore/BaseSystem.dmg' -print | sed -n '1p')
