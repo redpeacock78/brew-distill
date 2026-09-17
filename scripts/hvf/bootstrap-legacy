@@ -141,7 +141,7 @@ cleanup() {
     attach_log="$output_dir/install-media-attach.log"
     mkdir -p "$media_mount"
     if hdiutil attach -readonly -nobrowse -mountpoint "$media_mount" "$install_media" >"$attach_log" 2>&1; then
-      for media_file in diskutil-list.txt target-disk-info.txt target-volume-info.txt csrutil-status.txt nvram-diagnostics.txt startosinstall-environment.txt startosinstall-events.log startosinstall-watch.log install-script.log install-script.status startosinstall.log; do
+      for media_file in diskutil-list.txt target-disk-info.txt target-volume-info.txt csrutil-status.txt nvram-diagnostics.txt startosinstall-environment.txt network-diagnostics.txt startosinstall-events.log startosinstall-watch.log install-script.log install-script.status startosinstall.log startosinstall-stderr.log install-system.log; do
         if [ -f "$media_mount/$media_file" ]; then
           cp "$media_mount/$media_file" "$output_dir/$media_file"
         fi
@@ -242,6 +242,26 @@ for tool in "$qemu_bin" "$qemu_img" brew curl ditto hdiutil jq openssl pkgbuild 
     exit 1
   }
 done
+installer_app_info="$output_dir/installer-app-info.txt"
+{
+  printf '%s\n' "installer=$installer"
+  for path in \
+    "$installer/Contents/Info.plist" \
+    "$installer/Contents/Resources/startosinstall" \
+    "$installer/Contents/SharedSupport/SharedSupport.dmg" \
+    "$installer/Contents/SharedSupport/InstallInfo.plist" \
+    "$installer/Contents/SharedSupport/BuildManifest.plist" \
+    "$installer/Contents/SharedSupport/BaseSystem.dmg"; do
+    if [ -e "$path" ]; then
+      ls -ld "$path"
+    else
+      printf '%s\n' "MISSING $path"
+    fi
+  done
+  printf '%s\n' 'bundle metadata'
+  "$plutil_cmd" -extract CFBundleShortVersionString raw -o - "$installer/Contents/Info.plist" 2>&1 || true
+  "$plutil_cmd" -extract CFBundleVersion raw -o - "$installer/Contents/Info.plist" 2>&1 || true
+} > "$installer_app_info"
 expected_ssh_fingerprint=$(ssh-keygen -lf "$public_key" 2>/dev/null | awk 'NR == 1 {print $2}')
 test -n "$expected_ssh_fingerprint" || {
   printf '%s\n' "bootstrap-legacy: guest SSH public key is invalid" >&2
@@ -555,12 +575,35 @@ cat /Volumes/InstallMedia/target-volume-info.txt
   df -h "\$target_volume" /Volumes/InstallMedia 2>&1 || true
   diskutil apfs list 2>&1 || true
 } > /Volumes/InstallMedia/startosinstall-environment.txt
+{
+  printf '%s\n' "NETWORK \$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  command -v ifconfig >/dev/null 2>&1 && ifconfig -a 2>&1 || true
+  command -v netstat >/dev/null 2>&1 && netstat -rn 2>&1 || true
+  command -v scutil >/dev/null 2>&1 && scutil --dns 2>&1 || true
+  if command -v curl >/dev/null 2>&1; then
+    curl -I -L --connect-timeout 10 --max-time 20 https://swcdn.apple.com 2>&1 || true
+  fi
+} > /Volumes/InstallMedia/network-diagnostics.txt
 printf '%s\\n' "STARTOSINSTALL_BEGIN \$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 install_pid_file=/Volumes/InstallMedia/startosinstall.pid
 printf '%s\\n' "STARTOSINSTALL_BEGIN \$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$install_events"
 installer_app="/Volumes/InstallMedia/$installer_app_name"
 startosinstall="\$installer_app/Contents/Resources/startosinstall"
 test -x "\$startosinstall"
+install_system_log_pid=
+if command -v log >/dev/null 2>&1; then
+  log stream --style compact --level debug \\
+    --predicate 'process == "startosinstall" OR process == "installd"' \\
+    > /Volumes/InstallMedia/install-system.log 2>&1 &
+  install_system_log_pid=\$!
+fi
+stop_install_system_log() {
+  if [ -n "\$install_system_log_pid" ]; then
+    kill "\$install_system_log_pid" 2>/dev/null || true
+    wait "\$install_system_log_pid" 2>/dev/null || true
+    install_system_log_pid=
+  fi
+}
 prepare_signal_handler() {
   printf '%s\\n' "STARTOSINSTALL_PREPARE_COMPLETE \$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$install_events"
   if [ "$pidtosignal_enabled" = "1" ] && [ -s "\$install_pid_file" ]; then
@@ -573,11 +616,12 @@ set +e
 run_startosinstall() {
   "\$startosinstall" \\
     --agreetolicense$install_target_args$nointeraction_arg$rebootdelay_arg$pidtosignal_arg$installpackage_arg \\
-    > /Volumes/InstallMedia/startosinstall.log 2>&1 &
+    > /Volumes/InstallMedia/startosinstall.log 2> /Volumes/InstallMedia/startosinstall-stderr.log &
   startosinstall_child=\$!
   printf '%s\\n' "\$startosinstall_child" > "\$install_pid_file"
   wait "\$startosinstall_child"
   status=\$?
+  stop_install_system_log
   rm -f "\$install_pid_file"
   if [ "\$status" -ne 0 ]; then
     printf '%s\\n' "STARTOSINSTALL_FAILED \$(date -u +%Y-%m-%dT%H:%M:%SZ) status=\$status" >> "\$install_events"
@@ -662,6 +706,24 @@ test -s "$recovery" || {
   printf '%s\n' "bootstrap-legacy: hdiutil did not create recovery image" >&2
   exit 1
 }
+recovery_mount="$work_dir/recovery-version"
+recovery_attach_log="$output_dir/recovery-version-attach.log"
+recovery_system_version="$output_dir/recovery-system-version.txt"
+mkdir -p "$recovery_mount"
+if hdiutil attach -readonly -nobrowse -mountpoint "$recovery_mount" "$recovery" > "$recovery_attach_log" 2>&1; then
+  {
+    printf '%s\n' "recovery=$recovery"
+    printf '%s' 'ProductVersion='
+    "$plutil_cmd" -extract ProductVersion raw -o - \
+      "$recovery_mount/System/Library/CoreServices/SystemVersion.plist" 2>&1 || true
+    printf '%s' 'ProductBuildVersion='
+    "$plutil_cmd" -extract ProductBuildVersion raw -o - \
+      "$recovery_mount/System/Library/CoreServices/SystemVersion.plist" 2>&1 || true
+  } > "$recovery_system_version"
+  hdiutil detach "$recovery_mount" >> "$recovery_attach_log" 2>&1 || true
+else
+  printf '%s\n' 'Recovery image version inspection failed' > "$recovery_system_version"
+fi
 
 monitor="$work_dir/qemu-monitor.sock"
 qmp_monitor="$work_dir/qemu-qmp.sock"
@@ -795,6 +857,7 @@ args_json=$(
     --arg disk_format "$disk_format" \
     --arg rotation_rate "$disk_rotation_rate" \
     --arg disk_cache "$disk_cache" \
+    --arg media_cache "$disk_cache" \
     'map(
        gsub("\\{\\{DISK\\}\\}"; $disk) |
        gsub("\\{\\{OPENCORE\\}\\}"; $opencore) |
@@ -814,8 +877,8 @@ args_json=$(
          "-drive", ("id=RecoveryImage,if=none,format=raw,file=" + $recovery),
          "-device", "ide-hd,id=RecoveryDevice,bus=sata.3,drive=RecoveryImage"
        ] end
-     | if any(.[]; contains($media)) then . else . + [
-         "-drive", ("id=InstallMedia,if=none,format=raw,file=" + $media),
+       | if any(.[]; contains($media)) then . else . + [
+         "-drive", ("id=InstallMedia,if=none,format=raw,cache=" + $media_cache + ",file=" + $media),
          "-device", "ide-hd,id=InstallMediaDevice,bus=sata.4,drive=InstallMedia"
        ] end
        | if any(.[]; contains($disk)) then . else . + [
@@ -870,8 +933,9 @@ jq -n \
   --arg cpu_model "$cpu_model" \
   --arg disk_format "$disk_format" \
   --arg rotation_rate "$disk_rotation_rate" \
+  --arg media_cache "$disk_cache" \
   --argjson args "$sanitized_qemu_args" \
-  '{schema:1,qemu:$qemu,qemu_version:$qemu_version,args_sha256:$args_sha256,args:$args,cpu:{profile:$cpu_profile,model:$cpu_model},disk:{cache:$disk_cache,device:$disk_device,format:$disk_format,profile:$disk_profile,rotation_rate:($rotation_rate|tonumber)},vm_image:false}' \
+  '{schema:1,qemu:$qemu,qemu_version:$qemu_version,args_sha256:$args_sha256,args:$args,cpu:{profile:$cpu_profile,model:$cpu_model},disk:{cache:$disk_cache,device:$disk_device,format:$disk_format,profile:$disk_profile,rotation_rate:($rotation_rate|tonumber)},install_media_cache:$media_cache,vm_image:false}' \
   > "$output_dir/qemu-launch.json"
 
 guest_boot_started=$(date +%s)

@@ -64,9 +64,11 @@ sh -n "$install_script"
 grep -F -- '--volume /Volumes/MACOS' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'target-volume-info.txt' "$install_script" >/dev/null
 grep -F -- 'startosinstall-environment.txt' "$install_script" >/dev/null
+grep -F -- 'network-diagnostics.txt' "$install_script" >/dev/null
 grep -F -- 'startosinstall-watch.log' "$install_script" >/dev/null
 grep -F -- 'startosinstall-events.log' "$install_script" >/dev/null
 grep -F -- 'STARTOSINSTALL_FAILED' "$install_script" >/dev/null
+grep -F -- 'startosinstall-stderr.log' "$install_script" >/dev/null
 grep -F -- 'csrutil-status.txt' "$install_script" >/dev/null
 grep -F -- 'nvram-diagnostics.txt' "$install_script" >/dev/null
 grep -F -- 'NVRAM Protections: enabled' "$install_script" >/dev/null
@@ -93,6 +95,11 @@ grep -F -- 'SSH identity and public key do not match' "$repo_dir/scripts/hvf/boo
 grep -F -- 'OpenCore config.plist is invalid' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- "install_media_size=\${DISTILL_INSTALL_MEDIA_SIZE:-20g}" "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- "hdiutil create -size \"\$install_media_size\"" "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'installer-app-info.txt' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'recovery-system-version.txt' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'install_media_cache' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'network-diagnostics.txt' "$repo_dir/scripts/hvf/export-diagnostics" >/dev/null
+grep -F -- 'recovery-system-version.txt' "$repo_dir/scripts/hvf/export-diagnostics" >/dev/null
 disk_list="$test_dir/diskutil-list.txt"
 cat > "$disk_list" <<'EOF'
 /dev/disk0 (internal, physical):

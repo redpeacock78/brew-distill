@@ -505,6 +505,7 @@ jobs:
             out/hvf/reclaim.txt
             out/hvf/installer.json
             out/hvf/installer-capabilities.json
+            out/hvf/installer-app-info.txt
             out/hvf/startosinstall-usage.txt
             out/hvf/startosinstall-command.txt
             out/hvf/startosinstall-package-info.txt
@@ -514,13 +515,18 @@ jobs:
             out/hvf/csrutil-status.txt
             out/hvf/nvram-diagnostics.txt
             out/hvf/startosinstall-environment.txt
+            out/hvf/network-diagnostics.txt
             out/hvf/startosinstall-events.log
             out/hvf/startosinstall-watch.log
             out/hvf/install-script.log
             out/hvf/install-script.status
             out/hvf/startosinstall.log
+            out/hvf/startosinstall-stderr.log
+            out/hvf/install-system.log
             out/hvf/install-media-attach.log
             out/hvf/recovery-image.json
+            out/hvf/recovery-system-version.txt
+            out/hvf/recovery-version-attach.log
             out/hvf/recovery-download.log
             out/hvf/unattended-frames.jsonl
             out/hvf/qmp-events.jsonl

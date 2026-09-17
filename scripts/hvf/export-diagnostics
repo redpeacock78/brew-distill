@@ -25,14 +25,18 @@ find "$output_dir" -type f \( \
   -o -name 'guest-info.*' -o -name 'guest-*.json' -o -name '*.guest-*.json' \
   -o -name 'startosinstall-usage.txt' \
   -o -name 'startosinstall-command.txt' -o -name 'startosinstall-package-info.txt' \
+  -o -name 'installer-app-info.txt' \
   -o -name 'diskutil-list.txt' -o -name 'target-disk-info.txt' \
   -o -name 'target-volume-info.txt' \
   -o -name 'csrutil-status.txt' -o -name 'nvram-diagnostics.txt' \
   -o -name 'startosinstall-environment.txt' -o -name 'startosinstall-events.log' \
+  -o -name 'network-diagnostics.txt' \
   -o -name 'startosinstall-watch.log' \
   -o -name 'install-script.log' \
   -o -name 'install-script.status' -o -name 'startosinstall.log' \
+  -o -name 'startosinstall-stderr.log' -o -name 'install-system.log' \
   -o -name 'install-media-attach.log' -o -name 'recovery-image.json' \
+  -o -name 'recovery-system-version.txt' -o -name 'recovery-version-attach.log' \
   -o -name 'recovery-download.log' \
   -o -name 'unattended-frames.jsonl' -o -name 'screen-*.ppm' \
   -o -name 'qmp-events.jsonl' -o -name 'qemu-blockstats.jsonl' \
