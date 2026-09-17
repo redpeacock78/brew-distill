@@ -40,6 +40,7 @@ qemu_img=${QEMU_IMG:-qemu-img}
 plutil_cmd=${DISTILL_PLUTIL:-plutil}
 disk_rotation_rate=${DISTILL_QEMU_DISK_ROTATION_RATE:-0}
 disk_cache=${DISTILL_QEMU_DISK_CACHE:-writeback}
+disk_device=${DISTILL_QEMU_DISK_DEVICE:-sata}
 disk_profile=${DISTILL_QEMU_DISK_PROFILE:-current}
 disk_format=${DISTILL_BASE_FORMAT:-qcow2}
 install_package_mode=${DISTILL_LEGACY_INSTALLPACKAGE_MODE:-required}
@@ -118,6 +119,13 @@ case "$cpu_model" in
     ;;
   *)
     printf '%s\n' "bootstrap-legacy: DISTILL_QEMU_CPU_MODEL must be current or host" >&2
+    exit 2
+    ;;
+esac
+case "$disk_device" in
+  sata|nvme) ;;
+  *)
+    printf '%s\n' "bootstrap-legacy: DISTILL_QEMU_DISK_DEVICE must be sata or nvme" >&2
     exit 2
     ;;
 esac
@@ -765,7 +773,8 @@ printf '%s' "$runtime_args_json" | jq -e \
 }
 jq -n --argjson qemu_args "$runtime_args_json" \
   --arg disk_cache "$disk_cache" \
-  '{schema:1,qemu_args:$qemu_args,disk_cache:$disk_cache,vm_image:false}' > "$output_dir/.qemu-runtime.json"
+  --arg disk_device "$disk_device" \
+  '{schema:1,qemu_args:$qemu_args,disk_cache:$disk_cache,disk_device:$disk_device,vm_image:false}' > "$output_dir/.qemu-runtime.json"
 record_timing install_media_prepare "$install_media_started"
 
 args_json=$(
@@ -815,6 +824,25 @@ args_json=$(
          "-qmp", ("unix:" + $qmp_monitor + ",server=on,wait=off")
        ] end'
 )
+if [ "$disk_device" = nvme ]; then
+  args_json=$(printf '%s' "$args_json" | jq '
+    map(
+      if startswith("ide-hd,") and contains("drive=MacHDD") then
+        "nvme,id=MacHDDDevice,drive=MacHDD,serial=brew-distill"
+      elif startswith("-device=ide-hd,") and contains("drive=MacHDD") then
+        "-device=nvme,id=MacHDDDevice,drive=MacHDD,serial=brew-distill"
+      else .
+      end
+    )
+    | if any(.[]; (startswith("nvme,") or startswith("-device=nvme,")) and contains("drive=MacHDD"))
+      then .
+      else error("MacHDD NVMe device was not found")
+      end
+  ') || {
+    printf '%s\n' "bootstrap-legacy: cannot apply QEMU NVMe device to DISTILL_QEMU_ARGS_JSON" >&2
+    exit 2
+  }
+fi
 
 qemu_version=$($qemu_bin --version 2>/dev/null | sed -n '1p' || true)
 sanitized_qemu_args=$(printf '%s' "$args_json" | jq '
@@ -831,13 +859,14 @@ jq -n \
   --arg qemu_version "$qemu_version" \
   --arg args_sha256 "$qemu_args_sha256" \
   --arg disk_cache "$disk_cache" \
+  --arg disk_device "$disk_device" \
   --arg disk_profile "${DISTILL_QEMU_DISK_PROFILE:-current}" \
   --arg cpu_profile "$cpu_profile" \
   --arg cpu_model "$cpu_model" \
   --arg disk_format "$disk_format" \
   --arg rotation_rate "$disk_rotation_rate" \
   --argjson args "$sanitized_qemu_args" \
-  '{schema:1,qemu:$qemu,qemu_version:$qemu_version,args_sha256:$args_sha256,args:$args,cpu:{profile:$cpu_profile,model:$cpu_model},disk:{cache:$disk_cache,format:$disk_format,profile:$disk_profile,rotation_rate:($rotation_rate|tonumber)},vm_image:false}' \
+  '{schema:1,qemu:$qemu,qemu_version:$qemu_version,args_sha256:$args_sha256,args:$args,cpu:{profile:$cpu_profile,model:$cpu_model},disk:{cache:$disk_cache,device:$disk_device,format:$disk_format,profile:$disk_profile,rotation_rate:($rotation_rate|tonumber)},vm_image:false}' \
   > "$output_dir/qemu-launch.json"
 
 guest_boot_started=$(date +%s)
