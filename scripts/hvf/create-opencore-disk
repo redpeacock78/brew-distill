@@ -61,7 +61,8 @@ detach_image() {
   detach_attempt=1
   while ! hdiutil detach "$detach_target" >/dev/null 2>&1; do
     if [ "$detach_attempt" -ge 5 ]; then
-      return 1
+      hdiutil detach -force "$detach_target" >/dev/null 2>&1
+      return $?
     fi
     sleep 1
     detach_attempt=$((detach_attempt + 1))

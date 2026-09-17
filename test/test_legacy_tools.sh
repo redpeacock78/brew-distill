@@ -79,6 +79,7 @@ grep -F -- "disk_rotation_rate=\${DISTILL_QEMU_DISK_ROTATION_RATE:-0}" "$repo_di
 grep -F -- 'DISTILL_QEMU_DISK_CACHE' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'DISTILL_QEMU_CPU_MODEL' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'cannot apply QEMU CPU model' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'hdiutil detach -force' "$repo_dir/scripts/hvf/create-opencore-disk" >/dev/null
 grep -F -- "ditto \"\$installer\"/." "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'DISTILL_LEGACY_INSTALL_TARGET_MODE' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- '--eraseinstall --newvolumename MACOS' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
