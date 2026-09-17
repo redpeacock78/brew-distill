@@ -687,13 +687,6 @@ command_diagnostic="$output_dir/startosinstall-command.txt"
   printf '%s\n' '# script copied to InstallMedia'
   cat "$install_script"
 } > "$command_diagnostic"
-install_media="$work_dir/install-media.dmg"
-install_media_size=${DISTILL_INSTALL_MEDIA_SIZE:-20g}
-install_media_dmg_started=$(date +%s)
-hdiutil create -size "$install_media_size" -srcfolder "$media_root" -format UDRW -volname InstallMedia \
-  -ov "$install_media" >/dev/null
-record_timing install_media_dmg_create "$install_media_dmg_started"
-
 recovery_metadata="$output_dir/recovery-image.json"
 matching_recovery_log="$output_dir/matching-recovery.log"
 matching_recovery_source="$work_dir/matching-BaseSystem.dmg"
@@ -760,6 +753,21 @@ else
     > "$output_dir/recovery-download.log" 2>&1
   record_timing recovery_image_download "$recovery_download_started"
 fi
+installer_shared_support="$installer_app_path/Contents/SharedSupport"
+test -d "$installer_shared_support" || mkdir -p "$installer_shared_support"
+cp "$recovery_source" "$installer_shared_support/BaseSystem.dmg"
+recovery_chunklist="$work_dir/.BaseSystem.dmg.chunklist"
+if [ -s "$recovery_chunklist" ]; then
+  cp "$recovery_chunklist" "$installer_shared_support/BaseSystem.chunklist"
+fi
+printf '%s\n' "InstallMedia BaseSystem copied from $recovery_source" \
+  "InstallMedia BaseSystem path=$installer_shared_support/BaseSystem.dmg" >> "$installer_app_info"
+install_media="$work_dir/install-media.dmg"
+install_media_size=${DISTILL_INSTALL_MEDIA_SIZE:-20g}
+install_media_dmg_started=$(date +%s)
+hdiutil create -size "$install_media_size" -srcfolder "$media_root" -format UDRW -volname InstallMedia \
+  -ov "$install_media" >/dev/null
+record_timing install_media_dmg_create "$install_media_dmg_started"
 recovery_output="$work_dir/recovery"
 recovery_dmg_started=$(date +%s)
 hdiutil convert "$recovery_source" -format UDRW -o "$recovery_output" >/dev/null
