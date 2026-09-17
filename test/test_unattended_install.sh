@@ -180,38 +180,17 @@ sender = Thread.new do
 rescue IOError, SystemCallError
   nil
 end
-acceptor = Thread.new do
-  loop do
-    probe = server.accept
-    Thread.new(probe) do |peer|
-      peer.write(JSON.generate("QMP" => {"version" => {}, "capabilities" => []}) + "\n")
-      while (line = peer.gets)
-        message = JSON.parse(line)
-        response = case message["execute"]
-                   when "qmp_capabilities"
-                     {"return" => {}, "id" => message["id"]}
-                   when "query-blockstats"
-                     {"return" => [{"device" => "MacHDD", "stats" => {"rd_bytes" => 64, "wr_bytes" => 128}}], "id" => message["id"]}
-                   end
-        peer.write(JSON.generate(response) + "\n") if response
-      end
-    rescue IOError, SystemCallError, JSON::ParserError
-      nil
-    ensure
-      peer.close
-    end
-  end
-rescue IOError, SystemCallError
-  nil
-end
 while (line = client.gets)
   message = JSON.parse(line)
-  next unless message["execute"] == "qmp_capabilities"
-
-  client.write(JSON.generate("return" => {}, "id" => message["id"]) + "\n")
+  response = case message["execute"]
+             when "qmp_capabilities"
+               {"return" => {}, "id" => message["id"]}
+             when "query-blockstats"
+               {"return" => [{"device" => "MacHDD", "stats" => {"rd_bytes" => 64, "wr_bytes" => 128}}], "id" => message["id"]}
+             end
+  client.write(JSON.generate(response) + "\n") if response
 end
 sender.kill
-acceptor.kill
 client.close
 server.close
 RUBY

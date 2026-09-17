@@ -249,6 +249,12 @@ class Qmp
     @log = log
     @events = []
     @mutex = Mutex.new
+    @condition = ConditionVariable.new
+    @write_mutex = Mutex.new
+    @responses = {}
+    @next_request_id = 2
+    @ready = false
+    @listener_error = nil
     @closed = false
     FileUtils.rm_f(@log)
     @thread = Thread.new { listen }
@@ -267,18 +273,22 @@ class Qmp
   end
 
   def blockstats
-    socket = UNIXSocket.new(@path)
     deadline = monotonic + @timeout
-    read_message(socket, deadline: deadline)
-    socket.write(JSON.generate("execute" => "qmp_capabilities", "id" => 1) + "\n")
-    read_response(socket, 1, deadline)
-    socket.write(JSON.generate("execute" => "query-blockstats", "id" => 2) + "\n")
-    response = read_response(socket, 2, deadline)
+    request_id = @mutex.synchronize do
+      wait_until_ready(deadline)
+      id = @next_request_id
+      @next_request_id += 1
+      id
+    end
+    @write_mutex.synchronize do
+      raise UnattendedError, "QMP socket unavailable: #{@path}" unless @socket
+
+      @socket.write(JSON.generate("execute" => "query-blockstats", "id" => request_id) + "\n")
+    end
+    response = wait_for_response(request_id, deadline)
     raise UnattendedError, JSON.generate(response["error"]) if response["error"]
 
     response.fetch("return")
-  ensure
-    socket&.close
   end
 
   def event_since?(baseline, name)
@@ -288,7 +298,10 @@ class Qmp
   end
 
   def close
-    @closed = true
+    @mutex.synchronize do
+      @closed = true
+      @condition.broadcast
+    end
     @socket&.close
     @thread.join(1)
   end
@@ -308,9 +321,25 @@ class Qmp
       message = read_message(socket)
       break unless message
 
-      record_event(message) if message["event"]
+      if message["event"]
+        record_event(message)
+      elsif message["id"] == 1
+        @mutex.synchronize do
+          @ready = true
+          @condition.broadcast
+        end
+      else
+        @mutex.synchronize do
+          @responses[message["id"]] = message
+          @condition.broadcast
+        end
+      end
     end
   rescue IOError, SystemCallError, JSON::ParserError => error
+    @mutex.synchronize do
+      @listener_error = error.message unless @closed
+      @condition.broadcast
+    end
     log_error(error.message) unless @closed
   ensure
     socket&.close
@@ -330,22 +359,31 @@ class Qmp
     end
   end
 
-  def read_message(socket, deadline: nil)
-    if deadline
-      remaining = deadline - monotonic
-      raise UnattendedError, "QMP response timed out: #{@path}" if remaining <= 0
-      raise UnattendedError, "QMP response timed out: #{@path}" unless IO.select([socket], nil, nil, remaining)
-    end
+  def read_message(socket)
     line = socket.gets
     line && JSON.parse(line)
   end
 
-  def read_response(socket, id, deadline)
+  def wait_until_ready(deadline)
     loop do
-      message = read_message(socket, deadline: deadline)
-      raise UnattendedError, "QMP closed unexpectedly: #{@path}" unless message
-      next if message["event"]
-      return message if message["id"] == id
+      return if @ready
+      raise UnattendedError, @listener_error if @listener_error
+      raise UnattendedError, "QMP response timed out: #{@path}" if monotonic >= deadline
+
+      @condition.wait(@mutex, deadline - monotonic)
+    end
+  end
+
+  def wait_for_response(id, deadline)
+    @mutex.synchronize do
+      loop do
+        response = @responses.delete(id)
+        return response if response
+        raise UnattendedError, @listener_error if @listener_error
+        raise UnattendedError, "QMP response timed out: #{@path}" if monotonic >= deadline
+
+        @condition.wait(@mutex, deadline - monotonic)
+      end
     end
   end
 
