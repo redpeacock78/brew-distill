@@ -30,6 +30,11 @@ has_option() {
   grep -Eq -- "(^|[[:space:]])$1([[:space:],]|$)" "$usage_file"
 }
 
+has_binary_option() {
+  command -v strings >/dev/null 2>&1 || return 1
+  strings "$startosinstall" 2>/dev/null | grep -Fq -- "$1"
+}
+
 agreetolicense=0
 nointeraction=0
 eraseinstall=0
@@ -40,6 +45,7 @@ rebootdelay=0
 pidtosignal=0
 if has_option --agreetolicense; then agreetolicense=1; fi
 if has_option --nointeraction; then nointeraction=1; fi
+if [ "$nointeraction" -eq 0 ] && has_binary_option --nointeraction; then nointeraction=1; fi
 if has_option --eraseinstall; then eraseinstall=1; fi
 if has_option --installpackage; then installpackage=1; fi
 if has_option --volume; then volume=1; fi

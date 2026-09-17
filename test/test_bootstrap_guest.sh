@@ -24,6 +24,6 @@ fi
 DISTILL_GUEST=1 STARTOSINSTALL_LOG="$test_dir/startosinstall.log" \
   "$repo_dir/scripts/hvf/bootstrap-guest" \
   "$test_dir/Install macOS Test.app" "$test_dir/out"
-grep -Fqx -- '--agreetolicense' "$test_dir/startosinstall.log"
+grep -Fqx -- '--agreetolicense --nointeraction' "$test_dir/startosinstall.log"
 
 printf '%s\n' "ok"

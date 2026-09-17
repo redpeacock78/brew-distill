@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+# shellcheck disable=SC2034
+hidden_option_marker=--nointeraction
+
 if [ "${1:-}" = "--usage" ]; then
   printf '%s\n' \
     "--agreetolicense, agree to the license." \
