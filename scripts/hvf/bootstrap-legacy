@@ -711,18 +711,27 @@ if [ "${DISTILL_LEGACY_MATCHING_RECOVERY:-0}" = "1" ] && [ -f "$installer/Conten
       matching_recovery_ready=1
       printf '%s\n' "matching Recovery copied from $matching_recovery_file" >> "$matching_recovery_log"
     elif [ -n "$matching_recovery_zip" ]; then
-      matching_recovery_entry=AssetData/Restore/BaseSystem.dmg
-      if unzip -p "$matching_recovery_zip" "$matching_recovery_entry" > "$matching_recovery_source" 2>> "$matching_recovery_log" && \
+      matching_recovery_entry=$(unzip -Z1 "$matching_recovery_zip" 2>> "$matching_recovery_log" | \
+        awk '
+          {
+            sub(/\r$/, "")
+            path=tolower($0)
+            if (path ~ /(^|\/)assetdata\/restore\/basesystem\.dmg$/ && restore == "") restore=$0
+            if (path ~ /(^|\/)x86(_64)?basesystem\.dmg$/ && intel == "") intel=$0
+            if (path ~ /(^|\/)basesystem\.dmg$/ && generic == "") generic=$0
+          }
+          END {
+            if (restore != "") print restore
+            else if (intel != "") print intel
+            else if (generic != "") print generic
+          }
+        ' || true)
+      printf '%s\n' "SharedSupport Recovery entry=$matching_recovery_entry" >> "$matching_recovery_log"
+      if [ -n "$matching_recovery_entry" ] && \
+        unzip -p "$matching_recovery_zip" "$matching_recovery_entry" > "$matching_recovery_source" 2>> "$matching_recovery_log" && \
         [ -s "$matching_recovery_source" ]; then
         matching_recovery_ready=1
         printf '%s\n' "matching Recovery extracted from $matching_recovery_entry" >> "$matching_recovery_log"
-      else
-        matching_recovery_entry=./AssetData/Restore/BaseSystem.dmg
-        if unzip -p "$matching_recovery_zip" "$matching_recovery_entry" > "$matching_recovery_source" 2>> "$matching_recovery_log" && \
-          [ -s "$matching_recovery_source" ]; then
-          matching_recovery_ready=1
-          printf '%s\n' "matching Recovery extracted from $matching_recovery_entry" >> "$matching_recovery_log"
-        fi
       fi
     fi
     if [ "$matching_recovery_ready" != "1" ]; then
