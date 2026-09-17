@@ -94,7 +94,7 @@ case "$softwareupdate_fallback" in
     exit 2
     ;;
 esac
-aria_connections=${DISTILL_ARIA2_CONNECTIONS:-8}
+aria_connections=${DISTILL_ARIA2_CONNECTIONS:-4}
 aria_split=${DISTILL_ARIA2_SPLIT:-$aria_connections}
 case "$aria_connections" in
   ''|*[!0-9]*|0)
