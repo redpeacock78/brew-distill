@@ -717,13 +717,9 @@ if [ "${DISTILL_LEGACY_MATCHING_RECOVERY:-0}" = "1" ] && [ -f "$installer/Conten
             sub(/\r$/, "")
             path=tolower($0)
             if (path ~ /(^|\/)assetdata\/restore\/basesystem\.dmg$/ && restore == "") restore=$0
-            if (path ~ /(^|\/)x86(_64)?basesystem\.dmg$/ && intel == "") intel=$0
-            if (path ~ /(^|\/)basesystem\.dmg$/ && generic == "") generic=$0
           }
           END {
             if (restore != "") print restore
-            else if (intel != "") print intel
-            else if (generic != "") print generic
           }
         ' || true)
       printf '%s\n' "SharedSupport Recovery entry=$matching_recovery_entry" >> "$matching_recovery_log"
