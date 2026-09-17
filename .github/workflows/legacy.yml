@@ -121,6 +121,7 @@ jobs:
       DISTILL_UNATTENDED_FRAME_INTERVAL: "60"
       DISTILL_UNATTENDED_INSTALL_REBOOT_TIMEOUT: ${{ inputs.install_reboot_timeout }}
       DISTILL_LEGACY_INSTALLPACKAGE_MODE: ${{ inputs.install_package_mode }}
+      DISTILL_LEGACY_MATCHING_RECOVERY: "1"
       DISTILL_QEMU_CPU_PROFILE: ${{ inputs.qemu_cpu_profile }}
       DISTILL_QEMU_CPU_MODEL: ${{ inputs.qemu_cpu_model }}
       DISTILL_BATCH_JSON: ${{ inputs.batch }}
@@ -527,6 +528,7 @@ jobs:
             out/hvf/recovery-image.json
             out/hvf/recovery-system-version.txt
             out/hvf/recovery-version-attach.log
+            out/hvf/matching-recovery.log
             out/hvf/recovery-download.log
             out/hvf/unattended-frames.jsonl
             out/hvf/qmp-events.jsonl
@@ -569,7 +571,7 @@ jobs:
           timing_file=out/hvf/phase-timings.json
           for phase in \
             catalog_resolve installer_download installer_checksum installer_pkg_install installer_discovery \
-            recovery_image_download install_media_prepare bootstrap_pkg_build installer_tree_copy install_media_dmg_create \
+            recovery_image_download matching_recovery_prepare install_media_prepare bootstrap_pkg_build installer_tree_copy install_media_dmg_create \
             recovery_dmg_convert firmware_prepare guest_boot guest_install guest_ssh_wait brew_bootstrap \
             formula_build bottle_create bottle_upload bottle_verify; do
             seconds=0

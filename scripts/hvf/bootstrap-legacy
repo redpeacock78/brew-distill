@@ -49,6 +49,7 @@ cpu_model=${DISTILL_QEMU_CPU_MODEL:-current}
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/brew-distill-legacy-bootstrap.XXXXXX")
 qemu_pid=
 install_media=
+matching_recovery_mount=
 
 mkdir -p "$output_dir"
 
@@ -149,6 +150,11 @@ cleanup() {
       hdiutil detach "$media_mount" >>"$attach_log" 2>&1 || true
     else
       printf '%s\n' "install media diagnostics attach failed" >>"$attach_log"
+    fi
+  fi
+  if [ -n "$matching_recovery_mount" ]; then
+    if ! hdiutil detach "$matching_recovery_mount" >>"$output_dir/matching-recovery.log" 2>&1; then
+      hdiutil detach -force "$matching_recovery_mount" >>"$output_dir/matching-recovery.log" 2>&1 || true
     fi
   fi
   rm -rf "$work_dir"
@@ -688,12 +694,67 @@ hdiutil create -size "$install_media_size" -srcfolder "$media_root" -format UDRW
   -ov "$install_media" >/dev/null
 record_timing install_media_dmg_create "$install_media_dmg_started"
 
-recovery_source="$work_dir/BaseSystem.dmg"
 recovery_metadata="$output_dir/recovery-image.json"
-recovery_download_started=$(date +%s)
-"$fetch_recovery" "$major" "$recovery_source" "$recovery_metadata" \
-  > "$output_dir/recovery-download.log" 2>&1
-record_timing recovery_image_download "$recovery_download_started"
+matching_recovery_log="$output_dir/matching-recovery.log"
+matching_recovery_source="$work_dir/matching-BaseSystem.dmg"
+matching_recovery_ready=0
+matching_recovery_started=$(date +%s)
+: > "$matching_recovery_log"
+if [ "${DISTILL_LEGACY_MATCHING_RECOVERY:-0}" = "1" ] && [ -f "$installer/Contents/SharedSupport/SharedSupport.dmg" ]; then
+  matching_recovery_mount="$work_dir/matching-recovery"
+  mkdir -p "$matching_recovery_mount"
+  if hdiutil attach -readonly -nobrowse -mountpoint "$matching_recovery_mount" \
+    "$installer/Contents/SharedSupport/SharedSupport.dmg" >> "$matching_recovery_log" 2>&1; then
+    matching_recovery_zip=$(find "$matching_recovery_mount" -maxdepth 3 -type f -name '*.zip' -print | sed -n '1p')
+    matching_recovery_entry=
+    if [ -n "$matching_recovery_zip" ]; then
+      matching_recovery_entry=$(unzip -Z1 "$matching_recovery_zip" 2>> "$matching_recovery_log" | \
+        awk '$0 ~ /(^|\/)AssetData\/Restore\/BaseSystem\.dmg$/ {print; exit}' || true)
+    fi
+    if [ -n "$matching_recovery_entry" ] && \
+      unzip -p "$matching_recovery_zip" "$matching_recovery_entry" > "$matching_recovery_source" 2>> "$matching_recovery_log" && \
+      [ -s "$matching_recovery_source" ]; then
+      matching_recovery_ready=1
+      printf '%s\n' "matching Recovery extracted from $matching_recovery_entry" >> "$matching_recovery_log"
+    else
+      printf '%s\n' 'matching Recovery BaseSystem.dmg was not found in SharedSupport' >> "$matching_recovery_log"
+    fi
+    if ! hdiutil detach "$matching_recovery_mount" >> "$matching_recovery_log" 2>&1; then
+      hdiutil detach -force "$matching_recovery_mount" >> "$matching_recovery_log" 2>&1 || true
+    fi
+    matching_recovery_mount=
+  else
+    printf '%s\n' 'SharedSupport.dmg attach failed' >> "$matching_recovery_log"
+    matching_recovery_mount=
+  fi
+else
+  printf '%s\n' 'matching Recovery disabled or SharedSupport.dmg is unavailable' >> "$matching_recovery_log"
+fi
+record_timing matching_recovery_prepare "$matching_recovery_started"
+if [ "$matching_recovery_ready" = "1" ]; then
+  recovery_source="$matching_recovery_source"
+  installer_bundle_version=$("$plutil_cmd" -extract CFBundleVersion raw -o - \
+    "$installer/Contents/Info.plist" 2>/dev/null || true)
+  installer_package_sha=$(jq -r '.catalog.package_sha256 // empty' "$output_dir/installer.json")
+  recovery_sha=$(shasum -a 256 "$recovery_source" | awk '{print $1}')
+  recovery_size=$(wc -c < "$recovery_source" | tr -d '[:space:]')
+  jq -n \
+    --arg source installer-shared-support \
+    --arg version "$major" \
+    --arg bundle_version "$installer_bundle_version" \
+    --arg package_sha256 "$installer_package_sha" \
+    --arg image_sha256 "$recovery_sha" \
+    --argjson image_size_bytes "$recovery_size" \
+    --arg resolved_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{schema:1,source:$source,version:$version,bundle_version:$bundle_version,installer_package_sha256:$package_sha256,image_sha256:$image_sha256,image_size_bytes:$image_size_bytes,resolved_at:$resolved_at}' \
+    > "$recovery_metadata"
+else
+  recovery_source="$work_dir/BaseSystem.dmg"
+  recovery_download_started=$(date +%s)
+  "$fetch_recovery" "$major" "$recovery_source" "$recovery_metadata" \
+    > "$output_dir/recovery-download.log" 2>&1
+  record_timing recovery_image_download "$recovery_download_started"
+fi
 recovery_output="$work_dir/recovery"
 recovery_dmg_started=$(date +%s)
 hdiutil convert "$recovery_source" -format UDRW -o "$recovery_output" >/dev/null

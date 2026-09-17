@@ -97,6 +97,9 @@ grep -F -- "install_media_size=\${DISTILL_INSTALL_MEDIA_SIZE:-20g}" "$repo_dir/s
 grep -F -- "hdiutil create -size \"\$install_media_size\"" "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'installer-app-info.txt' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'recovery-system-version.txt' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'DISTILL_LEGACY_MATCHING_RECOVERY' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'matching-recovery.log' "$repo_dir/scripts/hvf/export-diagnostics" >/dev/null
+grep -F -- 'matching_recovery_prepare' "$repo_dir/scripts/hvf/record-timing" >/dev/null
 grep -F -- 'install_media_cache' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'network-diagnostics.txt' "$repo_dir/scripts/hvf/export-diagnostics" >/dev/null
 grep -F -- 'recovery-system-version.txt' "$repo_dir/scripts/hvf/export-diagnostics" >/dev/null

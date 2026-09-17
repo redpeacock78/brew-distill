@@ -37,7 +37,7 @@ find "$output_dir" -type f \( \
   -o -name 'startosinstall-stderr.log' -o -name 'install-system.log' \
   -o -name 'install-media-attach.log' -o -name 'recovery-image.json' \
   -o -name 'recovery-system-version.txt' -o -name 'recovery-version-attach.log' \
-  -o -name 'recovery-download.log' \
+  -o -name 'matching-recovery.log' -o -name 'recovery-download.log' \
   -o -name 'unattended-frames.jsonl' -o -name 'screen-*.ppm' \
   -o -name 'qmp-events.jsonl' -o -name 'qemu-blockstats.jsonl' \
   -o -name 'phase-timings.json' \
