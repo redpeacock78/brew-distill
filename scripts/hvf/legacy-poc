@@ -68,7 +68,8 @@ test -n "$installer" || {
   exit 1
 }
 "$repo_dir/scripts/hvf/installer-capabilities" "$installer" "$hvf_dir"
-"$repo_dir/scripts/hvf/prepare-opencore" "$major" "$hvf_dir/opencore"
+DISTILL_OPENCORE_INSTALLER_MODE=1 \
+  "$repo_dir/scripts/hvf/prepare-opencore" "$major" "$hvf_dir/opencore"
 opencore_disk=${DISTILL_OPENCORE_DISK:-$hvf_dir/opencore.img}
 if [ "$create_opencore_disk" = "1" ]; then
   "$repo_dir/scripts/hvf/create-opencore-disk" "$hvf_dir/opencore" "$opencore_disk"

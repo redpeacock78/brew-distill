@@ -24,6 +24,14 @@ case "$strict" in
     exit 2
     ;;
 esac
+installer_mode=${DISTILL_OPENCORE_INSTALLER_MODE:-0}
+case "$installer_mode" in
+  0|1) ;;
+  *)
+    printf '%s\n' "prepare-opencore: DISTILL_OPENCORE_INSTALLER_MODE must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
 
 command -v jq >/dev/null 2>&1 || {
   printf '%s\n' "prepare-opencore: jq is required" >&2
@@ -35,8 +43,8 @@ test -d "$source_dir" || {
   printf '%s\n' "prepare-opencore: OpenCore directory is unavailable: $source_dir" >&2
   exit 1
 }
-config=$(find "$source_dir" -type f -name config.plist -print | sort | tail -n 1)
-[ -n "$config" ] || {
+config="$source_dir/EFI/OC/config.plist"
+[ -f "$config" ] || {
   printf '%s\n' "prepare-opencore: config.plist is required" >&2
   exit 1
 }
@@ -51,12 +59,15 @@ if find "$source_dir" -type l -print | grep -q . ||
 fi
 boot_files='EFI/BOOT/BOOTx64.efi
 EFI/OC/OpenCore.efi'
-if [ "$strict" = "1" ]; then
-  command -v plutil >/dev/null 2>&1 || {
+validate_input=0
+if [ "$strict" = "1" ] || [ "$installer_mode" = "1" ]; then
+  validate_input=1
+  plutil_cmd=${DISTILL_PLUTIL:-plutil}
+  command -v "$plutil_cmd" >/dev/null 2>&1 || {
     printf '%s\n' "prepare-opencore: plutil is required in strict mode" >&2
     exit 1
   }
-  plutil -lint "$config" >/dev/null || {
+  "$plutil_cmd" -lint "$config" >/dev/null || {
     printf '%s\n' "prepare-opencore: invalid config.plist: $config" >&2
     exit 1
   }
@@ -77,6 +88,74 @@ test ! -e "$output_dir" || {
 mkdir -p "$output_dir"
 cp -R "$source_dir"/. "$output_dir"/
 
+config="$output_dir/EFI/OC/config.plist"
+csr_before=
+csr_after=
+if [ "$installer_mode" = "1" ]; then
+  command -v python3 >/dev/null 2>&1 || {
+    printf '%s\n' "prepare-opencore: python3 is required in installer mode" >&2
+    exit 1
+  }
+  csr_values=$(python3 - "$config" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+with path.open("rb") as handle:
+    plist = plistlib.load(handle)
+if not isinstance(plist, dict):
+    raise SystemExit("config.plist root must be a dictionary")
+
+nvram = plist.setdefault("NVRAM", {})
+if not isinstance(nvram, dict):
+    raise SystemExit("config.plist NVRAM must be a dictionary")
+add = nvram.setdefault("Add", {})
+if not isinstance(add, dict):
+    raise SystemExit("config.plist NVRAM.Add must be a dictionary")
+guid = add.setdefault("7C436110-AB2A-4BBB-A880-FE41995C9F82", {})
+if not isinstance(guid, dict):
+    raise SystemExit("config.plist NVRAM.Add GUID entry must be a dictionary")
+
+raw = guid.get("csr-active-config")
+if raw is None:
+    before = "unset"
+    flags = 0
+    width = 4
+elif isinstance(raw, (bytes, bytearray)) and 0 < len(raw) <= 4:
+    flags = int.from_bytes(raw, "little")
+    before = f"0x{flags:08x}"
+    width = len(raw)
+else:
+    raise SystemExit("config.plist csr-active-config must be one-to-four-byte data")
+
+flags |= 0x40
+guid["csr-active-config"] = flags.to_bytes(width, "little")
+with path.open("wb") as handle:
+    plistlib.dump(plist, handle, fmt=plistlib.FMT_XML, sort_keys=False)
+print(f"before={before}")
+print(f"after=0x{flags:08x}")
+PY
+  )
+  csr_before=$(printf '%s\n' "$csr_values" | sed -n 's/^before=//p')
+  csr_after=$(printf '%s\n' "$csr_values" | sed -n 's/^after=//p')
+fi
+
+if [ "$validate_input" = "1" ]; then
+  "$plutil_cmd" -lint "$config" >/dev/null || {
+    printf '%s\n' "prepare-opencore: copied config.plist is invalid: $config" >&2
+    exit 1
+  }
+  while IFS= read -r boot_file; do
+    [ -f "$output_dir/$boot_file" ] || {
+      printf '%s\n' "prepare-opencore: copied OpenCore boot file is missing: $output_dir/$boot_file" >&2
+      exit 1
+    }
+  done <<EOF
+$boot_files
+EOF
+fi
+
 boot_files_json=$(printf '%s\n' "$boot_files" | jq -R -s 'split("\n") | map(select(length > 0))')
 
 jq -n \
@@ -85,7 +164,10 @@ jq -n \
   --arg output "$output_dir" \
   --arg config "$config" \
   --argjson strict "$strict" \
+  --argjson installer_mode "$installer_mode" \
+  --arg csr_before "$csr_before" \
+  --arg csr_after "$csr_after" \
   --argjson boot_files "$boot_files_json" \
-  '{schema:1,version:$version,source:$source,output:$output,config:$config,strict:($strict == 1),boot_files:$boot_files,vm_image:false}' \
+  '{schema:1,version:$version,source:$source,output:$output,config:$config,strict:($strict == 1),installer_mode:($installer_mode == 1),csr_active_config:{before:(if $csr_before == "" then null else $csr_before end),after:(if $csr_after == "" then null else $csr_after end)},boot_files:$boot_files,vm_image:false}' \
   > "$output_dir/opencore.json"
 printf '%s\n' "OpenCore: $output_dir"

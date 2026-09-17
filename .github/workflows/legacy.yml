@@ -275,8 +275,8 @@ jobs:
             echo "Legacy guest SSH public key was not prepared" >&2
             exit 1
           }
-          config=$(find "$DISTILL_OPENCORE_DIR" -type f -name config.plist -print | sed -n '1p')
-          test -n "$config" || {
+          config="$DISTILL_OPENCORE_DIR/EFI/OC/config.plist"
+          test -f "$config" || {
             echo "Legacy OpenCore input has no config.plist" >&2
             exit 1
           }
@@ -417,6 +417,8 @@ jobs:
             out/hvf/diskutil-list.txt
             out/hvf/target-disk-info.txt
             out/hvf/target-volume-info.txt
+            out/hvf/csrutil-status.txt
+            out/hvf/nvram-diagnostics.txt
             out/hvf/startosinstall-environment.txt
             out/hvf/startosinstall-events.log
             out/hvf/startosinstall-watch.log

@@ -67,12 +67,17 @@ grep -F -- 'startosinstall-environment.txt' "$install_script" >/dev/null
 grep -F -- 'startosinstall-watch.log' "$install_script" >/dev/null
 grep -F -- 'startosinstall-events.log' "$install_script" >/dev/null
 grep -F -- 'STARTOSINSTALL_FAILED' "$install_script" >/dev/null
+grep -F -- 'csrutil-status.txt' "$install_script" >/dev/null
+grep -F -- 'nvram-diagnostics.txt' "$install_script" >/dev/null
+grep -F -- 'NVRAM Protections: enabled' "$install_script" >/dev/null
+grep -F -- 'STARTOSINSTALL_PRECONDITION_FAILED' "$install_script" >/dev/null
 grep -F -- '/sbin/shutdown -h now' "$install_script" >/dev/null
 grep -F -- '--pidtosignal $$' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'PROCESS_TREE' "$install_script" >/dev/null
 grep -F -- 'rotation_rate=' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- "disk_rotation_rate=\${DISTILL_QEMU_DISK_ROTATION_RATE:-0}" "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'DISTILL_QEMU_DISK_CACHE' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- "ditto \"\$installer\"/." "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'DISTILL_LEGACY_INSTALL_TARGET_MODE' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- '--eraseinstall --newvolumename MACOS' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'qemu-launch.json' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
@@ -109,7 +114,10 @@ mkdir -p "$test_dir/opencore-src/EFI/BOOT" "$test_dir/opencore-src/EFI/OC"
 cat > "$test_dir/opencore-src/EFI/OC/config.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>ACPI</key><dict/></dict></plist>
+<plist version="1.0"><dict>
+<key>ACPI</key><dict/>
+<key>NVRAM</key><dict><key>Add</key><dict><key>7C436110-AB2A-4BBB-A880-FE41995C9F82</key><dict><key>csr-active-config</key><data>Jg8=</data></dict></dict></dict>
+</dict></plist>
 PLIST
 printf '%s\n' boot > "$test_dir/opencore-src/EFI/BOOT/BOOTx64.efi"
 printf '%s\n' opencore > "$test_dir/opencore-src/EFI/OC/OpenCore.efi"
@@ -118,6 +126,18 @@ DISTILL_OPENCORE_DIR="$test_dir/opencore-src" DISTILL_OPENCORE_STRICT=1 \
 test -s "$test_dir/opencore/EFI/OC/config.plist"
 jq -e '.version == "13" and .strict == true and (.boot_files | length) == 2 and .vm_image == false' \
   "$test_dir/opencore/opencore.json" >/dev/null
+DISTILL_OPENCORE_DIR="$test_dir/opencore-src" DISTILL_OPENCORE_STRICT=1 DISTILL_OPENCORE_INSTALLER_MODE=1 \
+  "$repo_dir/scripts/hvf/prepare-opencore" 13 "$test_dir/opencore-installer" >/dev/null
+jq -e '.installer_mode == true and .csr_active_config.before == "0x00000f26" and .csr_active_config.after == "0x00000f66"' \
+  "$test_dir/opencore-installer/opencore.json" >/dev/null
+python3 - "$test_dir/opencore-installer/EFI/OC/config.plist" <<'PY'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as handle:
+    config = plistlib.load(handle)
+assert config["NVRAM"]["Add"]["7C436110-AB2A-4BBB-A880-FE41995C9F82"]["csr-active-config"] == b"\x66\x0f"
+PY
 "$repo_dir/scripts/hvf/create-opencore-disk" "$test_dir/opencore" \
   "$test_dir/opencore.img" >/dev/null
 test -s "$test_dir/opencore.img"

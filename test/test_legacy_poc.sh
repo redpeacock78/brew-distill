@@ -137,6 +137,8 @@ jq -e '.version == "13.6.1" and .bundle_version == "13.6.1" and (.installer | en
 jq -e '.usage_status == 0' "$test_dir/output/hvf/installer-capabilities.json" >/dev/null
 test -s "$test_dir/output/hvf/startosinstall-usage.txt"
 test -s "$test_dir/output/hvf/opencore-disk.json"
+jq -e '.installer_mode == true and .csr_active_config.after == "0x00000040"' \
+  "$test_dir/output/hvf/opencore/opencore.json" >/dev/null
 jq -e '.csound.status == "PASS"' \
   "$test_dir/output/artifacts/batch-results.json" >/dev/null
 test -s "$test_dir/output/diagnostics.json"
