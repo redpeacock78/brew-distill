@@ -468,6 +468,7 @@ class Driver
     @type_settle = env_number("DISTILL_UNATTENDED_TYPE_SETTLE", 2)
     @picker_frame = nil
     @recovery_frame = nil
+    @terminal_frame = nil
     @guest_boot_seconds = nil
     @started = nil
     @command_entered_at = nil
@@ -540,6 +541,7 @@ def run
       end
     end
     raise UnattendedError, "recovery Terminal navigation failed" unless terminal_frame
+    @terminal_frame = terminal_frame
     sleep @terminal_settle if @terminal_settle.positive?
     send_key "spc"
     sleep @terminal_probe_delay
@@ -821,6 +823,7 @@ end
   def picker_like?(frame)
     return false unless frame&.visible && @picker_frame
     return true if frame.digest == @picker_frame.digest
+    return false if @terminal_frame && frame.digest == @terminal_frame.digest
     return false unless @recovery_frame
 
     frame.signature_distance(@picker_frame) < frame.signature_distance(@recovery_frame)
