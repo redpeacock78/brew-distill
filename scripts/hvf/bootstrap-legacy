@@ -367,7 +367,11 @@ case "$install_target_mode" in
       exit 1
     fi
     install_target_args=' --eraseinstall --newvolumename MACOS'
-    install_target_is_volume=0
+    # Recovery otherwise treats its booted Base System as the erase target.
+    if capability volume || [ "$major" = "13" ]; then
+      install_target_args=' --volume /Volumes/MACOS --eraseinstall --newvolumename MACOS'
+      install_target_is_volume=1
+    fi
     ;;
   *)
     printf '%s\n' "bootstrap-legacy: DISTILL_LEGACY_INSTALL_TARGET_MODE must be auto, volume, or eraseinstall" >&2
