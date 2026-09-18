@@ -43,6 +43,12 @@ Frame = Struct.new(
     signature.each_index.sum { |index| (signature[index] - other.signature[index]).abs }
   end
 
+  def signature_distance(other)
+    return Float::INFINITY unless other && signature.length == other.signature.length
+
+    signature.each_index.sum { |index| (signature[index] - other.signature[index]).abs }
+  end
+
   def uefi_shell_like?
     return false unless visible && signature.length >= 30
 
@@ -488,7 +494,7 @@ def run
     uefi_shell_frames = 0
     @recovery_frame = wait_for(@recovery_timeout, "macOS recovery") do
       frame = capture_frame
-      if frame.uefi_shell_like?
+      if frame.uefi_shell_like? && !picker_signature_like?(frame)
         uefi_shell_frames += 1
         if uefi_shell_frames >= 2
           save_current_frame("screen-recovery-timeout.ppm")
@@ -804,11 +810,17 @@ end
 
   def picker_like?(frame)
     return false unless frame&.visible && @picker_frame
-    return false unless frame.dimensions == @picker_frame.dimensions
     return true if frame.digest == @picker_frame.digest
     return false unless @recovery_frame
 
-    frame.distance(@picker_frame) < frame.distance(@recovery_frame)
+    frame.signature_distance(@picker_frame) < frame.signature_distance(@recovery_frame)
+  end
+
+  def picker_signature_like?(frame)
+    return false unless frame&.visible && @picker_frame
+
+    # ponytail: fixed coarse threshold keeps the existing framebuffer heuristic dependency-free.
+    frame.signature_distance(@picker_frame) < 10_000
   end
 
   def type_text(text)

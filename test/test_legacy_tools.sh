@@ -137,6 +137,8 @@ grep -F -- 'recovery_system_disk' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev
 grep -F -- 'APFS Volume Disk' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'x86_64BaseSystem.dmg' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'matching Recovery expanded' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'signature_distance' "$repo_dir/scripts/hvf/unattended-install" >/dev/null
+grep -F -- 'picker_signature_like?' "$repo_dir/scripts/hvf/unattended-install" >/dev/null
 grep -F -- 'matching-recovery.log' "$repo_dir/scripts/hvf/export-diagnostics" >/dev/null
 grep -F -- 'matching_recovery_prepare' "$repo_dir/scripts/hvf/record-timing" >/dev/null
 grep -F -- 'install_media_cache' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
