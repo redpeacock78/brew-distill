@@ -39,6 +39,7 @@ socket_path, command_log = ARGV
 qmp_trigger = ENV["QMP_RESET_TRIGGER"]
 stall_after = ENV.fetch("HMP_STALL_AFTER", "0").to_i
 stall_seconds = ENV.fetch("HMP_STALL_SECONDS", "0").to_f
+picker_reselect = ENV["PICKER_RESELECT"] == "1"
 File.unlink(socket_path) if File.exist?(socket_path)
 server = UNIXServer.new(socket_path)
 paused = false
@@ -102,17 +103,21 @@ end
 
 File.open(command_log, "w") do |log|
   uefi_shell = ENV["UEFI_SHELL"] == "1"
+  ret_count = 0
   loop do
     client = server.accept
     client.write("QEMU fake monitor\n(qemu) ")
     command = client.gets.to_s.chomp
     log.puts(command)
     log.flush
+    ret_count += 1 if command == "sendkey ret"
     File.write(qmp_trigger, "") if qmp_trigger && command == "sendkey ret" && screendumps >= 10
     response = case command
                when /\Ascreendump (.+)\z/
                  screendumps += 1
-                 if uefi_shell && screendumps >= 2
+                 if picker_reselect && ret_count == 1 && (2..3).cover?(screendumps)
+                   write_frame(Regexp.last_match(1), 64, 36, 220, 220, 220)
+                 elsif uefi_shell && screendumps >= 2
                    write_uefi_shell_frame(Regexp.last_match(1), 64, 36)
                  else
                    case screendumps
@@ -196,7 +201,7 @@ server.close
 RUBY
 chmod 755 "$test_dir/fake-qmp.rb"
 
-QMP_RESET_TRIGGER="$qmp_trigger" HMP_STALL_AFTER=13 HMP_STALL_SECONDS=0 \
+QMP_RESET_TRIGGER="$qmp_trigger" PICKER_RESELECT=1 HMP_STALL_AFTER=13 HMP_STALL_SECONDS=0 \
   ruby "$test_dir/fake-monitor.rb" "$monitor" "$commands" &
 server_pid=$!
 QMP_RESET_DELAY=0.1 ruby "$test_dir/fake-qmp.rb" "$qmp_monitor" "$qmp_trigger" &
@@ -255,6 +260,7 @@ grep -Fqx -- 'sendkey shift-v' "$commands"
 grep -Fqx -- 'sendkey shift-i' "$commands"
 grep -Fqx -- 'sendkey shift-m' "$commands"
 grep -Fqx -- 'sendkey ret' "$commands"
+test "$(grep -Fc -- 'sendkey ret' "$commands")" -ge 2
 grep -Fqx -- 'drive_del RecoveryImage' "$commands"
 
 kill "$server_pid" 2>/dev/null || true

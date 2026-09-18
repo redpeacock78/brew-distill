@@ -492,8 +492,18 @@ def run
 
     event "waiting for macOS recovery"
     uefi_shell_frames = 0
+    picker_reselects = 0
     @recovery_frame = wait_for(@recovery_timeout, "macOS recovery") do
       frame = capture_frame
+      if picker_signature_like?(frame)
+        if picker_reselects < 2
+          picker_reselects += 1
+          event "OpenCore picker remained during Recovery wait; pressing Enter (#{picker_reselects}/2)"
+          send_key "ret"
+        end
+        next nil
+      end
+      picker_reselects = 0
       if frame.uefi_shell_like? && !picker_signature_like?(frame)
         uefi_shell_frames += 1
         if uefi_shell_frames >= 2
