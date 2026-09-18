@@ -280,7 +280,7 @@ server_pid=$!
 QMP_EVENT=SHUTDOWN QMP_RESET_DELAY=0.1 ruby "$test_dir/fake-qmp.rb" \
   "$shutdown_qmp_monitor" "$shutdown_trigger" &
 qmp_server_pid=$!
-(sleep 2; touch "$shutdown_trigger") &
+(sleep 5; touch "$shutdown_trigger") &
 shutdown_trigger_pid=$!
 
 if DISTILL_UNATTENDED_FRAME_WAIT=0 \

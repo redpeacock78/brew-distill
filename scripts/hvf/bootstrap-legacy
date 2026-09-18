@@ -344,11 +344,8 @@ case "$install_target_mode" in
     if capability volume || [ "$major" = "13" ]; then
       install_target_args=' --volume /Volumes/MACOS'
       install_target_is_volume=1
-    elif capability eraseinstall && capability newvolumename; then
-      install_target_args=' --eraseinstall --newvolumename MACOS'
-      install_target_is_volume=0
     else
-      printf '%s\n' "bootstrap-legacy: installer exposes neither --volume nor --eraseinstall/--newvolumename" >&2
+      printf '%s\n' "bootstrap-legacy: installer does not expose a Recovery volume target" >&2
       exit 1
     fi
     ;;
@@ -361,20 +358,8 @@ case "$install_target_mode" in
       exit 1
     fi
     ;;
-  eraseinstall)
-    if ! capability eraseinstall || ! capability newvolumename; then
-      printf '%s\n' "bootstrap-legacy: requested eraseinstall target mode is unavailable" >&2
-      exit 1
-    fi
-    install_target_args=' --eraseinstall --newvolumename MACOS'
-    # Recovery otherwise treats its booted Base System as the erase target.
-    if capability volume || [ "$major" = "13" ]; then
-      install_target_args=' --volume /Volumes/MACOS --eraseinstall --newvolumename MACOS'
-      install_target_is_volume=1
-    fi
-    ;;
   *)
-    printf '%s\n' "bootstrap-legacy: DISTILL_LEGACY_INSTALL_TARGET_MODE must be auto, volume, or eraseinstall" >&2
+    printf '%s\n' "bootstrap-legacy: DISTILL_LEGACY_INSTALL_TARGET_MODE must be auto or volume" >&2
     exit 2
     ;;
 esac

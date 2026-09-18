@@ -122,8 +122,8 @@ grep -F -- "installer_app_name=\$(basename -- \"\$installer\")" "$repo_dir/scrip
 grep -F -- "ditto \"\$installer\" \"\$installer_app_path\"" "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- "startosinstall=\"\\\$installer_app/Contents/Resources/startosinstall\"" "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'DISTILL_LEGACY_INSTALL_TARGET_MODE' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
-grep -F -- '--eraseinstall --newvolumename MACOS' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
-grep -F -- '--volume /Volumes/MACOS --eraseinstall --newvolumename MACOS' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'bootstrap-legacy: installer does not expose a Recovery volume target' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
+grep -F -- 'DISTILL_LEGACY_INSTALL_TARGET_MODE must be auto or volume' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'qemu-launch.json' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'osk=<redacted>' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
 grep -F -- 'SSH identity and public key do not match' "$repo_dir/scripts/hvf/bootstrap-legacy" >/dev/null
